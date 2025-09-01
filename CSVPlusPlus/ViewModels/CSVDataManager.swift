@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import Combine
 
 @MainActor
 class CSVDataManager: ObservableObject {
@@ -39,23 +38,12 @@ class CSVDataManager: ObservableObject {
     
     // SQLite integration
     private var sqliteHandler: SQLiteCSVHandler?
-    @Published var tableSortOrder: [SortDescriptor<CSVRow>] = []
     
     let aggregationEngine = AggregationEngine()
-    private var cancellables = Set<AnyCancellable>()
-    
-    init() {
-        setupBindings()
-    }
-    
-    private func setupBindings() {
-        // Removed complex filtering/sorting bindings since SQLite handles this now
-    }
     
     // MARK: - SQLite Methods
     
     func loadCSVWithSQLite(from url: URL) async {
-        print("🚀🚀🚀 loadCSVWithSQLite called for: \(url.lastPathComponent)")
         
         isLoading = true
         loadingProgress = 0
@@ -82,7 +70,6 @@ class CSVDataManager: ObservableObject {
                 self.columns = importedColumns
                 self.totalRowCount = try! self.sqliteHandler!.getTotalCount()
                 self.filteredRowCount = self.totalRowCount
-                print("🚀🚀🚀 SQLite import SUCCESS: \(importedColumns.count) columns, \(self.totalRowCount) rows")
             }
             
             // Load first page
@@ -94,7 +81,6 @@ class CSVDataManager: ObservableObject {
         } catch {
             await MainActor.run {
                 self.errorMessage = "Error loading CSV: \(error.localizedDescription)"
-                print("❌ SQLite import error: \(error)")
             }
         }
         

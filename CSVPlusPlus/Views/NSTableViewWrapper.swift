@@ -20,6 +20,10 @@ struct NSTableViewWrapper: NSViewRepresentable {
         tableView.allowsColumnResizing = true
         tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         
+        // Add visible grid lines
+        tableView.gridStyleMask = [.solidVerticalGridLineMask, .solidHorizontalGridLineMask]
+        tableView.gridColor = NSColor.separatorColor
+        
         // Enable sorting
         tableView.allowsColumnSelection = false
         tableView.allowsMultipleSelection = false
@@ -55,7 +59,6 @@ struct NSTableViewWrapper: NSViewRepresentable {
             
             // Only reload if data actually changed
             if hasNewData {
-                print("🔄 NSTableView reloading with \(dataManager.visibleRows.count) rows")
                 tableView.reloadData()
             }
         }
