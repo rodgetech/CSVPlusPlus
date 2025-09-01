@@ -46,6 +46,16 @@ struct NSTableViewWrapper: NSViewRepresentable {
         
         let coordinator = context.coordinator
         
+        // Set up the callback for updating sort descriptors (only once)
+        if dataManager.updateTableViewSortDescriptors == nil {
+            dataManager.updateTableViewSortDescriptors = { [weak tableView, weak dataManager] in
+                guard let tableView = tableView, let dataManager = dataManager else { return }
+                let newDescriptors = dataManager.getCurrentSortDescriptors()
+                print("🔄 Updating NSTableView sort descriptors: \(newDescriptors.map { "\($0.key ?? "nil"):\($0.ascending)" })")
+                tableView.sortDescriptors = newDescriptors
+            }
+        }
+        
         // Update coordinator data - this fixes MainActor issues
         Task { @MainActor in
             let hasNewData = coordinator.updateData(
@@ -221,34 +231,21 @@ extension NSTableViewWrapper {
         // MARK: - NSTableViewDelegate
         
         func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
-            print("🔄 sortDescriptorsDidChange: \(tableView.sortDescriptors.map { "\($0.key ?? "nil"):\($0.ascending)" })")
+            let sortDescriptors = tableView.sortDescriptors
+            print("🔄 sortDescriptorsDidChange: \(sortDescriptors.map { "\($0.key ?? "nil"):\($0.ascending)" })")
             
-            guard let sortDescriptor = tableView.sortDescriptors.first,
-                  let columnName = sortDescriptor.key else { 
-                print("🔄 No valid sort descriptor")
-                return 
+            guard !sortDescriptors.isEmpty else {
+                print("🔄 No sort descriptors")
+                return
             }
             
-            print("🔄 Sorting by \(columnName) ascending=\(sortDescriptor.ascending)")
+            print("🔄 Sorting with \(sortDescriptors.count) column(s)")
             
-            // Load sorted data from SQLite and reload table - don't touch sortDescriptors!
+            // AppKit handles all the complexity - just convert to SQL and reload
             Task { @MainActor in
-                guard let columnIndex = self.columns.firstIndex(where: { $0.name == columnName }) else {
-                    print("🔄 Column not found: \(columnName)")
-                    return
-                }
-                
-                // Fetch sorted data from SQLite
-                await self.dataManager?.loadSortedData(
-                    columnIndex: columnIndex,
-                    columnName: columnName,
-                    ascending: sortDescriptor.ascending
-                )
-                
-                // Only reload data, preserving sort descriptors
+                await self.dataManager?.loadMultiSortedData(sortDescriptors: sortDescriptors)
                 tableView.reloadData()
-                
-                print("🔄 Sort complete - data reloaded")
+                print("🔄 Sort complete")
             }
         }
         

@@ -21,7 +21,7 @@ struct MainCSVView: View {
                     NSTableViewWrapper(dataManager: dataManager)
                     
                     // Load more button
-                    if dataManager.visibleRows.count < dataManager.totalRowCount {
+                    if dataManager.visibleRows.count < dataManager.filteredRowCount {
                         HStack {
                             Spacer()
                             
@@ -29,7 +29,7 @@ struct MainCSVView: View {
                                 HStack {
                                     Image(systemName: "arrow.down.circle")
                                     Text("Load More Rows")
-                                    Text("(\(dataManager.visibleRows.count) of \(dataManager.totalRowCount))")
+                                    Text("(\(dataManager.visibleRows.count) of \(dataManager.filteredRowCount))")
                                         .foregroundColor(.secondary)
                                 }
                             }
@@ -44,8 +44,14 @@ struct MainCSVView: View {
                     
                     // Status bar
                     HStack {
-                        Text("Total: \(dataManager.totalRowCount.formatted())")
-                            .font(.caption)
+                        if !dataManager.filterSet.filters.isEmpty {
+                            Text("Filtered: \(dataManager.filteredRowCount.formatted()) of \(dataManager.totalRowCount.formatted())")
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                        } else {
+                            Text("Total: \(dataManager.totalRowCount.formatted())")
+                                .font(.caption)
+                        }
                         
                         Spacer()
                         

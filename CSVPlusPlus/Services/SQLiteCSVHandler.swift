@@ -243,6 +243,16 @@ class SQLiteCSVHandler {
     // MARK: - Query Methods
     
     func getRows(offset: Int, limit: Int, sortColumn: String? = nil, sortAscending: Bool = true, filters: [String] = []) throws -> [CSVRow] {
+        // Legacy single-column sorting - convert to multi-column format
+        var sortClauses: [String] = []
+        if let sortColumn = sortColumn {
+            sortClauses = ["\(sortColumn) \(sortAscending ? "ASC" : "DESC")"]
+        }
+        
+        return try getRowsWithMultiSort(offset: offset, limit: limit, sortClauses: sortClauses, filters: filters)
+    }
+    
+    func getRowsWithMultiSort(offset: Int, limit: Int, sortClauses: [String], filters: [String] = []) throws -> [CSVRow] {
         var querySQL = "SELECT \(columns.map { $0.name }.joined(separator: ", ")) FROM \(tableName)"
         
         // Add WHERE clause for filters
@@ -251,14 +261,24 @@ class SQLiteCSVHandler {
         }
         
         // Add ORDER BY clause
-        if let sortColumn = sortColumn {
-            querySQL += " ORDER BY \(sortColumn) \(sortAscending ? "ASC" : "DESC")"
+        if !sortClauses.isEmpty {
+            querySQL += " ORDER BY " + sortClauses.joined(separator: ", ")
         } else {
             querySQL += " ORDER BY row_id"
         }
         
         // Add pagination
         querySQL += " LIMIT \(limit) OFFSET \(offset)"
+        
+        // Print the generated SQL query
+        print("🔍 SQL Query: \(querySQL)")
+        
+        if !sortClauses.isEmpty {
+            print("🔍 Sort Clauses: \(sortClauses)")
+        }
+        if !filters.isEmpty {
+            print("🔍 Filters: \(filters)")
+        }
         
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, querySQL, -1, &stmt, nil) == SQLITE_OK else {

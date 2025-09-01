@@ -19,9 +19,25 @@ class CSVDataManager: ObservableObject {
             if !ignoreSortSetChanges && sqliteHandler != nil {
                 Task { @MainActor in
                     await reloadSQLiteData()
+                    // Notify any NSTableView to update its sort descriptors
+                    updateTableViewSortDescriptors?()
                 }
             }
         }
+    }
+    
+    // Callback to update NSTableView sort descriptors
+    var updateTableViewSortDescriptors: (() -> Void)?
+    
+    // Convert current sortSet to NSTableView sort descriptors
+    func getCurrentSortDescriptors() -> [NSSortDescriptor] {
+        return sortSet.criteria
+            .sorted { $0.priority < $1.priority }
+            .compactMap { sort -> NSSortDescriptor? in
+                guard sort.columnIndex < columns.count else { return nil }
+                let columnName = columns[sort.columnIndex].name
+                return NSSortDescriptor(key: columnName, ascending: sort.direction == .ascending)
+            }
     }
     
     private var ignoreSortSetChanges = false
@@ -177,20 +193,23 @@ class CSVDataManager: ObservableObject {
     private func reloadSQLiteData() async {
         print("🔄 reloadSQLiteData called")
         
-        // Get current sort from sortSet
-        var sortColumn: String? = nil
-        var sortAscending = true
+        // Build sort clauses from sortSet
+        let sortClauses = sortSet.criteria
+            .sorted { $0.priority < $1.priority }
+            .compactMap { sort -> String? in
+                guard sort.columnIndex < columns.count else { return nil }
+                let columnName = columns[sort.columnIndex].name
+                let direction = sort.direction == .ascending ? "ASC" : "DESC"
+                return "\(columnName) \(direction)"
+            }
         
-        if let firstSort = sortSet.criteria.first,
-           firstSort.columnIndex < columns.count {
-            sortColumn = columns[firstSort.columnIndex].name
-            sortAscending = firstSort.direction == .ascending
-            print("🔄 Reloading with sort: \(sortColumn ?? "nil") ascending: \(sortAscending)")
-        } else {
+        if sortClauses.isEmpty {
             print("🔄 Reloading with no sort")
+            await loadSQLiteData(page: 0, pageSize: 100)
+        } else {
+            print("🔄 Reloading with multi-sort: \(sortClauses)")
+            await loadSQLiteDataWithMultiSort(page: 0, pageSize: 100, sortClauses: sortClauses)
         }
-        
-        await loadSQLiteData(page: 0, pageSize: 100, sortColumn: sortColumn, sortAscending: sortAscending)
     }
     
     private func buildSQLFilters() -> [String] {
@@ -288,6 +307,75 @@ class CSVDataManager: ObservableObject {
         
         // Load fresh sorted data from SQLite - this is the proper approach
         await loadSQLiteData(page: 0, pageSize: 100, sortColumn: columnName, sortAscending: ascending)
+    }
+    
+    func loadMultiSortedData(sortDescriptors: [NSSortDescriptor]) async {
+        print("🔄 loadMultiSortedData: \(sortDescriptors.count) descriptors")
+        
+        // Convert NSTableView sort descriptors to our internal format
+        ignoreSortSetChanges = true
+        sortSet.criteria.removeAll()
+        
+        for (priority, descriptor) in sortDescriptors.enumerated() {
+            guard let columnName = descriptor.key,
+                  let columnIndex = columns.firstIndex(where: { $0.name == columnName }) else {
+                continue
+            }
+            
+            let sortCriteria = SortCriteria(
+                columnIndex: columnIndex,
+                direction: descriptor.ascending ? .ascending : .descending,
+                priority: priority
+            )
+            sortSet.criteria.append(sortCriteria)
+        }
+        
+        ignoreSortSetChanges = false
+        
+        // Build SQL sort clauses
+        let sortClauses = sortDescriptors.compactMap { descriptor -> String? in
+            guard let columnName = descriptor.key else { return nil }
+            let clause = "\(columnName) \(descriptor.ascending ? "ASC" : "DESC")"
+            print("🔍 NSTableView Descriptor: \(columnName) ascending=\(descriptor.ascending) → SQL: \(clause)")
+            return clause
+        }
+        
+        print("🔍 Final ORDER BY: \(sortClauses.joined(separator: ", "))")
+        
+        // Load data using multi-column sort
+        await loadSQLiteDataWithMultiSort(page: 0, pageSize: 100, sortClauses: sortClauses)
+    }
+    
+    private func loadSQLiteDataWithMultiSort(page: Int, pageSize: Int, sortClauses: [String]) async {
+        guard let handler = sqliteHandler else { return }
+        
+        do {
+            let filters = buildSQLFilters()
+            let offset = page * pageSize
+            
+            let rows = try handler.getRowsWithMultiSort(
+                offset: offset,
+                limit: pageSize,
+                sortClauses: sortClauses,
+                filters: filters
+            )
+            
+            let totalCount = try handler.getTotalCount(filters: filters)
+            
+            await MainActor.run {
+                if page == 0 {
+                    self.visibleRows = rows
+                } else {
+                    self.visibleRows.append(contentsOf: rows)
+                }
+                self.filteredRowCount = totalCount
+            }
+            
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Error loading multi-sorted data: \(error.localizedDescription)"
+            }
+        }
     }
     
     func loadSortedDataSilently(columnIndex: Int, columnName: String, ascending: Bool) async {
