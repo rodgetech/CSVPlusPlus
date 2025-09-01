@@ -15,13 +15,16 @@ class CSVDataManager: ObservableObject {
     }
     @Published var sortSet = SortSet() {
         didSet {
-            if sqliteHandler != nil {
+            print("🔄 sortSet didSet triggered, ignoring: \(ignoreSortSetChanges)")
+            if !ignoreSortSetChanges && sqliteHandler != nil {
                 Task { @MainActor in
                     await reloadSQLiteData()
                 }
             }
         }
     }
+    
+    private var ignoreSortSetChanges = false
     
     @Published var isLoading = false
     @Published var loadingProgress: Double = 0
@@ -172,7 +175,22 @@ class CSVDataManager: ObservableObject {
     }
     
     private func reloadSQLiteData() async {
-        await loadSQLiteData(page: 0, pageSize: 100)
+        print("🔄 reloadSQLiteData called")
+        
+        // Get current sort from sortSet
+        var sortColumn: String? = nil
+        var sortAscending = true
+        
+        if let firstSort = sortSet.criteria.first,
+           firstSort.columnIndex < columns.count {
+            sortColumn = columns[firstSort.columnIndex].name
+            sortAscending = firstSort.direction == .ascending
+            print("🔄 Reloading with sort: \(sortColumn ?? "nil") ascending: \(sortAscending)")
+        } else {
+            print("🔄 Reloading with no sort")
+        }
+        
+        await loadSQLiteData(page: 0, pageSize: 100, sortColumn: sortColumn, sortAscending: sortAscending)
     }
     
     private func buildSQLFilters() -> [String] {
@@ -251,10 +269,14 @@ class CSVDataManager: ObservableObject {
         }
     }
     
-    func applySortFromTableView(columnIndex: Int, ascending: Bool) async {
-        // Clear existing sorts and add new one
-        sortSet.criteria.removeAll()
+    func loadSortedData(columnIndex: Int, columnName: String, ascending: Bool) async {
+        print("🔄 loadSortedData: \(columnName) ascending=\(ascending)")
         
+        // Update sortSet to keep it in sync with NSTableView, but temporarily ignore changes to prevent circular updates
+        ignoreSortSetChanges = true
+        
+        // Clear existing sorts and add the new one
+        sortSet.criteria.removeAll()
         let newSort = SortCriteria(
             columnIndex: columnIndex,
             direction: ascending ? .ascending : .descending,
@@ -262,8 +284,40 @@ class CSVDataManager: ObservableObject {
         )
         sortSet.criteria.append(newSort)
         
-        // Reload data with new sort
-        await loadSQLiteData(page: 0, pageSize: 100)
+        ignoreSortSetChanges = false
+        
+        // Load fresh sorted data from SQLite - this is the proper approach
+        await loadSQLiteData(page: 0, pageSize: 100, sortColumn: columnName, sortAscending: ascending)
+    }
+    
+    func loadSortedDataSilently(columnIndex: Int, columnName: String, ascending: Bool) async {
+        print("🔄 loadSortedDataSilently: \(columnName) ascending=\(ascending)")
+        
+        // Load data without triggering any UI updates that might interfere with NSTableView sorting
+        guard let handler = sqliteHandler else { return }
+        
+        do {
+            let filters = buildSQLFilters()
+            let rows = try handler.getRows(
+                offset: 0,
+                limit: 100,
+                sortColumn: columnName,
+                sortAscending: ascending,
+                filters: filters
+            )
+            
+            let totalCount = try handler.getTotalCount(filters: filters)
+            
+            await MainActor.run {
+                self.visibleRows = rows
+                self.filteredRowCount = totalCount
+            }
+            
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Error loading sorted data: \(error.localizedDescription)"
+            }
+        }
     }
     
     // MARK: - Filter & Sort Management
