@@ -575,6 +575,131 @@ class SQLiteCSVHandler {
         
         print("🔍 === END DATABASE INSPECTION ===")
     }
+    
+    // MARK: - Arbitrary SQL Execution
+    
+    func executeArbitrarySQL(_ query: String) throws -> QueryResult {
+        guard db != nil else {
+            throw QueryError.databaseNotInitialized
+        }
+        
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            throw QueryError.syntaxError("Empty query")
+        }
+        
+        let queryType = determineQueryType(trimmedQuery)
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        // For SELECT queries, use prepared statements to get structured results
+        if queryType == .select {
+            return try executeSelectQuery(trimmedQuery, startTime: startTime)
+        } else {
+            // For non-SELECT queries, use sqlite3_exec
+            return try executeNonSelectQuery(trimmedQuery, queryType: queryType, startTime: startTime)
+        }
+    }
+    
+    private func executeSelectQuery(_ query: String, startTime: CFAbsoluteTime) throws -> QueryResult {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK else {
+            let errorMsg = String(cString: sqlite3_errmsg(db))
+            throw QueryError.executionError(errorMsg)
+        }
+        defer { sqlite3_finalize(stmt) }
+        
+        // Get column information
+        let columnCount = sqlite3_column_count(stmt)
+        var resultColumns: [CSVColumn] = []
+        
+        for i in 0..<columnCount {
+            let columnName = String(cString: sqlite3_column_name(stmt, i))
+            // For query results, we'll detect type dynamically or default to text
+            resultColumns.append(CSVColumn(name: columnName, index: Int(i), type: .text))
+        }
+        
+        // Execute query and collect results
+        var resultRows: [CSVRow] = []
+        var rowIndex = 0
+        
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            var values: [String] = []
+            
+            for i in 0..<columnCount {
+                let columnType = sqlite3_column_type(stmt, i)
+                let value: String
+                
+                switch columnType {
+                case SQLITE_NULL:
+                    value = ""
+                case SQLITE_INTEGER:
+                    value = String(sqlite3_column_int64(stmt, i))
+                case SQLITE_FLOAT:
+                    value = String(sqlite3_column_double(stmt, i))
+                case SQLITE_TEXT:
+                    value = String(cString: sqlite3_column_text(stmt, i))
+                default:
+                    value = ""
+                }
+                values.append(value)
+            }
+            
+            resultRows.append(CSVRow(id: rowIndex, values: values))
+            rowIndex += 1
+        }
+        
+        let executionTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000 // Convert to milliseconds
+        
+        return QueryResult(
+            columns: resultColumns,
+            rows: resultRows,
+            executionTimeMs: executionTime,
+            affectedRows: resultRows.count,
+            queryType: .select
+        )
+    }
+    
+    private func executeNonSelectQuery(_ query: String, queryType: QueryResult.QueryType, startTime: CFAbsoluteTime) throws -> QueryResult {
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        let result = sqlite3_exec(db, query, nil, nil, &errorMessage)
+        
+        if result != SQLITE_OK {
+            let error = errorMessage != nil ? String(cString: errorMessage!) : "Unknown error"
+            sqlite3_free(errorMessage)
+            throw QueryError.executionError(error)
+        }
+        
+        let executionTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000 // Convert to milliseconds
+        let affectedRows = Int(sqlite3_changes(db))
+        
+        return QueryResult(
+            columns: [],
+            rows: [],
+            executionTimeMs: executionTime,
+            affectedRows: affectedRows,
+            queryType: queryType
+        )
+    }
+    
+    private func determineQueryType(_ query: String) -> QueryResult.QueryType {
+        let upperQuery = query.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if upperQuery.hasPrefix("SELECT") {
+            return .select
+        } else if upperQuery.hasPrefix("INSERT") {
+            return .insert
+        } else if upperQuery.hasPrefix("UPDATE") {
+            return .update
+        } else if upperQuery.hasPrefix("DELETE") {
+            return .delete
+        } else if upperQuery.hasPrefix("CREATE") {
+            return .create
+        } else if upperQuery.hasPrefix("DROP") {
+            return .drop
+        } else {
+            return .other
+        }
+    }
 }
 
 // Extension for FileHandle to read line by line

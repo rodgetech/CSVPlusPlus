@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct MainCSVView: View {
     @StateObject private var dataManager = CSVDataManager()
+    @State private var selectedViewMode: ViewMode = .table
     @State private var showingFilePicker = false
     @State private var showingFilterPanel = false
     @State private var showingSortPanel = false
@@ -18,33 +19,58 @@ struct MainCSVView: View {
                 )
             } else {
                 VStack(spacing: 0) {
-                    NSTableViewWrapper(dataManager: dataManager)
-                    
-                    // Aggregation footer
-                    if let aggregation = dataManager.currentAggregation {
-                        AggregationFooterView(aggregation: aggregation)
-                    }
-                    
-                    // Load more button
-                    if dataManager.visibleRows.count < dataManager.filteredRowCount {
-                        HStack {
-                            Spacer()
-                            
-                            Button(action: loadMoreRows) {
-                                HStack {
-                                    Image(systemName: "arrow.down.circle")
-                                    Text("Load More Rows")
-                                    Text("(\(dataManager.visibleRows.count) of \(dataManager.filteredRowCount))")
-                                        .foregroundColor(.secondary)
-                                }
+                    // View mode segmented control
+                    HStack {
+                        Picker("View Mode", selection: $selectedViewMode) {
+                            ForEach(ViewMode.allCases) { mode in
+                                Text(mode.rawValue).tag(mode)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(dataManager.isLoading)
-                            
-                            Spacer()
                         }
-                        .padding()
-                        .background(Color(NSColor.controlBackgroundColor))
+                        .pickerStyle(SegmentedPickerStyle())
+                        .frame(width: 200)
+                        
+                        Spacer()
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    
+                    // Main content area
+                    if selectedViewMode == .table {
+                        // Table view content
+                        VStack(spacing: 0) {
+                            NSTableViewWrapper(dataManager: dataManager)
+                            
+                            // Aggregation footer
+                            if let aggregation = dataManager.currentAggregation {
+                                AggregationFooterView(aggregation: aggregation)
+                            }
+                            
+                            // Load more button
+                            if dataManager.visibleRows.count < dataManager.filteredRowCount {
+                                HStack {
+                                    Spacer()
+                                    
+                                    Button(action: loadMoreRows) {
+                                        HStack {
+                                            Image(systemName: "arrow.down.circle")
+                                            Text("Load More Rows")
+                                            Text("(\(dataManager.visibleRows.count) of \(dataManager.filteredRowCount))")
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(dataManager.isLoading)
+                                    
+                                    Spacer()
+                                }
+                                .padding()
+                                .background(Color(NSColor.controlBackgroundColor))
+                            }
+                        }
+                    } else {
+                        // Query view content
+                        SQLQueryView(dataManager: dataManager)
                     }
                     
                     // Status bar
@@ -60,10 +86,15 @@ struct MainCSVView: View {
                         
                         Spacer()
                         
-                        Text("Showing: \(dataManager.visibleRows.count.formatted()) rows")
-                            .font(.caption)
+                        if selectedViewMode == .table {
+                            Text("Showing: \(dataManager.visibleRows.count.formatted()) rows")
+                                .font(.caption)
+                        } else {
+                            Text("Query Mode")
+                                .font(.caption)
+                        }
                         
-                        if !dataManager.filterSet.filters.isEmpty {
+                        if !dataManager.filterSet.filters.isEmpty && selectedViewMode == .table {
                             Divider()
                                 .frame(height: 12)
                                 .padding(.horizontal, 8)

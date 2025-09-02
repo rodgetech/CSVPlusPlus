@@ -6,7 +6,7 @@ class CSVDataManager: ObservableObject {
     @Published var columns: [CSVColumn] = []
     @Published var filterSet = FilterSet() {
         didSet {
-            if sqliteHandler != nil {
+            if _sqliteHandler != nil {
                 Task { @MainActor in
                     await reloadSQLiteData()
                     // Update aggregation when filters change
@@ -18,7 +18,7 @@ class CSVDataManager: ObservableObject {
     @Published var sortSet = SortSet() {
         didSet {
             print("🔄 sortSet didSet triggered, ignoring: \(ignoreSortSetChanges)")
-            if !ignoreSortSetChanges && sqliteHandler != nil {
+            if !ignoreSortSetChanges && _sqliteHandler != nil {
                 Task { @MainActor in
                     await reloadSQLiteData()
                     // Notify any NSTableView to update its sort descriptors
@@ -60,7 +60,13 @@ class CSVDataManager: ObservableObject {
     @Published var visibleRows: [CSVRow] = []
     
     // SQLite integration
-    private var sqliteHandler: SQLiteCSVHandler?
+    private var _sqliteHandler: SQLiteCSVHandler?
+    
+    // Public getter for SQLiteHandler (for SQL query interface)
+    var sqliteHandler: SQLiteCSVHandler? {
+        get { return _sqliteHandler }
+        set { _sqliteHandler = newValue }
+    }
     
     let aggregationEngine = AggregationEngine()
     
@@ -76,13 +82,13 @@ class CSVDataManager: ObservableObject {
         
         do {
             // Create new SQLite handler
-            sqliteHandler = SQLiteCSVHandler()
+            _sqliteHandler = SQLiteCSVHandler()
             
             loadingMessage = "Importing CSV to database..."
             loadingProgress = 0.3
             
             // Import CSV to SQLite
-            let importedColumns = try await sqliteHandler!.importCSV(from: url) { [weak self] progress, message in
+            let importedColumns = try await _sqliteHandler!.importCSV(from: url) { [weak self] progress, message in
                 Task { @MainActor in
                     self?.loadingProgress = 0.3 + (progress * 0.6)
                     self?.loadingMessage = message
@@ -92,7 +98,7 @@ class CSVDataManager: ObservableObject {
             await MainActor.run {
                 self.columns = importedColumns
                 do {
-                    self.totalRowCount = try self.sqliteHandler!.getTotalCount()
+                    self.totalRowCount = try self._sqliteHandler!.getTotalCount()
                     self.filteredRowCount = self.totalRowCount
                 } catch {
                     self.totalRowCount = 0
@@ -117,7 +123,7 @@ class CSVDataManager: ObservableObject {
     }
     
     func loadSQLiteData(page: Int, pageSize: Int, sortColumn: String? = nil, sortAscending: Bool = true) async {
-        guard let handler = sqliteHandler else { return }
+        guard let handler = _sqliteHandler else { return }
         
         do {
             // Build filters from FilterSet
@@ -153,7 +159,7 @@ class CSVDataManager: ObservableObject {
     }
     
     func appendSQLiteData(page: Int, pageSize: Int, sortColumn: String? = nil, sortAscending: Bool = true) async {
-        guard let handler = sqliteHandler else { return }
+        guard let handler = _sqliteHandler else { return }
         
         do {
             let filters = buildSQLFilters()
@@ -270,7 +276,7 @@ class CSVDataManager: ObservableObject {
     // MARK: - NSTableView Support Methods
     
     func loadDataWindow(offset: Int, limit: Int) async {
-        guard let handler = sqliteHandler else { return }
+        guard let handler = _sqliteHandler else { return }
         
         do {
             let filters = buildSQLFilters()
@@ -352,7 +358,7 @@ class CSVDataManager: ObservableObject {
     }
     
     private func loadSQLiteDataWithMultiSort(page: Int, pageSize: Int, sortClauses: [String]) async {
-        guard let handler = sqliteHandler else { return }
+        guard let handler = _sqliteHandler else { return }
         
         do {
             let filters = buildSQLFilters()
@@ -387,7 +393,7 @@ class CSVDataManager: ObservableObject {
         print("🔄 loadSortedDataSilently: \(columnName) ascending=\(ascending)")
         
         // Load data without triggering any UI updates that might interfere with NSTableView sorting
-        guard let handler = sqliteHandler else { return }
+        guard let handler = _sqliteHandler else { return }
         
         do {
             let filters = buildSQLFilters()
@@ -477,7 +483,7 @@ class CSVDataManager: ObservableObject {
     
     private func updateAggregationForSelectedColumn() {
         guard let column = selectedColumnForAggregation,
-              let handler = sqliteHandler else {
+              let handler = _sqliteHandler else {
             currentAggregation = nil
             return
         }
@@ -516,13 +522,13 @@ class CSVDataManager: ObservableObject {
         selectedColumnForAggregation = nil
         currentAggregation = nil
         fileName = ""
-        sqliteHandler = nil
+        _sqliteHandler = nil
     }
     
     // MARK: - Export
     
     func exportFilteredData(to url: URL) async throws {
-        guard let handler = sqliteHandler else {
+        guard let handler = _sqliteHandler else {
             throw CSVError.readError("No data source available")
         }
         
