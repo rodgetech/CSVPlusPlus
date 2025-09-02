@@ -51,8 +51,9 @@ struct NSTableViewWrapper: NSViewRepresentable {
             dataManager.updateTableViewSortDescriptors = { [weak tableView, weak dataManager] in
                 guard let tableView = tableView, let dataManager = dataManager else { return }
                 let newDescriptors = dataManager.getCurrentSortDescriptors()
-                print("🔄 Updating NSTableView sort descriptors: \(newDescriptors.map { "\($0.key ?? "nil"):\($0.ascending)" })")
-                tableView.sortDescriptors = newDescriptors
+                DispatchQueue.main.async {
+                    tableView.sortDescriptors = newDescriptors
+                }
             }
         }
         
@@ -232,20 +233,15 @@ extension NSTableViewWrapper {
         
         func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
             let sortDescriptors = tableView.sortDescriptors
-            print("🔄 sortDescriptorsDidChange: \(sortDescriptors.map { "\($0.key ?? "nil"):\($0.ascending)" })")
             
             guard !sortDescriptors.isEmpty else {
-                print("🔄 No sort descriptors")
                 return
             }
-            
-            print("🔄 Sorting with \(sortDescriptors.count) column(s)")
             
             // AppKit handles all the complexity - just convert to SQL and reload
             Task { @MainActor in
                 await self.dataManager?.loadMultiSortedData(sortDescriptors: sortDescriptors)
                 tableView.reloadData()
-                print("🔄 Sort complete")
             }
         }
         

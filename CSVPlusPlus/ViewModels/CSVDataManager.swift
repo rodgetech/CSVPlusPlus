@@ -91,8 +91,14 @@ class CSVDataManager: ObservableObject {
             
             await MainActor.run {
                 self.columns = importedColumns
-                self.totalRowCount = try! self.sqliteHandler!.getTotalCount()
-                self.filteredRowCount = self.totalRowCount
+                do {
+                    self.totalRowCount = try self.sqliteHandler!.getTotalCount()
+                    self.filteredRowCount = self.totalRowCount
+                } catch {
+                    self.totalRowCount = 0
+                    self.filteredRowCount = 0
+                    self.errorMessage = "Error getting row count: \(error.localizedDescription)"
+                }
             }
             
             // Load first page
@@ -177,20 +183,13 @@ class CSVDataManager: ObservableObject {
         let currentPage = visibleRows.count / pageSize
         
         // Get current sort from sortSet
-        var sortColumn: String? = nil
-        var sortAscending = true
-        
-        if let firstSort = sortSet.criteria.first,
-           firstSort.columnIndex < columns.count {
-            sortColumn = columns[firstSort.columnIndex].name
-            sortAscending = firstSort.direction == .ascending
-        }
+        let sort = getCurrentSort()
         
         await appendSQLiteData(
             page: currentPage,
             pageSize: pageSize,
-            sortColumn: sortColumn,
-            sortAscending: sortAscending
+            sortColumn: sort.sortColumn,
+            sortAscending: sort.sortAscending
         )
     }
     
@@ -214,6 +213,19 @@ class CSVDataManager: ObservableObject {
             print("🔄 Reloading with multi-sort: \(sortClauses)")
             await loadSQLiteDataWithMultiSort(page: 0, pageSize: 100, sortClauses: sortClauses)
         }
+    }
+    
+    private func getCurrentSort() -> (sortColumn: String?, sortAscending: Bool) {
+        var sortColumn: String? = nil
+        var sortAscending = true
+        
+        if let firstSort = sortSet.criteria.first,
+           firstSort.columnIndex < columns.count {
+            sortColumn = columns[firstSort.columnIndex].name
+            sortAscending = firstSort.direction == .ascending
+        }
+        
+        return (sortColumn: sortColumn, sortAscending: sortAscending)
     }
     
     private func buildSQLFilters() -> [String] {
@@ -264,20 +276,13 @@ class CSVDataManager: ObservableObject {
             let filters = buildSQLFilters()
             
             // Get current sort from sortSet
-            var sortColumn: String? = nil
-            var sortAscending = true
-            
-            if let firstSort = sortSet.criteria.first,
-               firstSort.columnIndex < columns.count {
-                sortColumn = columns[firstSort.columnIndex].name
-                sortAscending = firstSort.direction == .ascending
-            }
+            let sort = getCurrentSort()
             
             let rows = try handler.getRows(
                 offset: offset,
                 limit: limit,
-                sortColumn: sortColumn,
-                sortAscending: sortAscending,
+                sortColumn: sort.sortColumn,
+                sortAscending: sort.sortAscending,
                 filters: filters
             )
             
