@@ -20,9 +20,12 @@ struct NSTableViewWrapper: NSViewRepresentable {
         tableView.allowsColumnResizing = true
         tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         
-        // Add visible grid lines
-        tableView.gridStyleMask = [.solidVerticalGridLineMask, .solidHorizontalGridLineMask]
-        tableView.gridColor = NSColor.separatorColor
+        // Modern grid styling - only horizontal lines, no vertical lines
+        tableView.gridStyleMask = [.solidHorizontalGridLineMask]
+        tableView.gridColor = NSColor.separatorColor.withAlphaComponent(0.3)
+        
+        // Set custom row height for better spacing
+        tableView.rowHeight = 34
         
         // Enable sorting
         tableView.allowsColumnSelection = false
@@ -147,7 +150,10 @@ extension NSTableViewWrapper {
                     let sortDescriptor = NSSortDescriptor(key: csvColumn.name, ascending: true)
                     tableColumn.sortDescriptorPrototype = sortDescriptor
                     
+                    // Improve header typography
                     tableColumn.headerCell.title = csvColumn.name
+                    tableColumn.headerCell.font = NSFont.systemFont(ofSize: 13, weight: .heavy)
+                    
                     tableView.addTableColumn(tableColumn)
                 }
                 
@@ -190,13 +196,17 @@ extension NSTableViewWrapper {
                 textField.cell?.lineBreakMode = .byTruncatingTail
                 textField.translatesAutoresizingMaskIntoConstraints = false
                 
+                // Improved typography
+                textField.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+                textField.textColor = NSColor.labelColor
+                
                 cellView?.addSubview(textField)
                 cellView?.textField = textField
                 
-                // Add constraints
+                // Better padding - 10px horizontal, centered vertically
                 NSLayoutConstraint.activate([
-                    textField.leadingAnchor.constraint(equalTo: cellView!.leadingAnchor, constant: 4),
-                    textField.trailingAnchor.constraint(equalTo: cellView!.trailingAnchor, constant: -4),
+                    textField.leadingAnchor.constraint(equalTo: cellView!.leadingAnchor, constant: 10),
+                    textField.trailingAnchor.constraint(equalTo: cellView!.trailingAnchor, constant: -10),
                     textField.centerYAnchor.constraint(equalTo: cellView!.centerYAnchor)
                 ])
             }
@@ -245,9 +255,7 @@ extension NSTableViewWrapper {
             }
         }
         
-        func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-            return 20 // Standard row height
-        }
+        // Row height is now set globally to 34px for better spacing
         
         func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
             return true // Allow row selection
@@ -264,5 +272,84 @@ extension NSTableViewWrapper {
                 dataManager?.selectColumnForAggregation(column)
             }
         }
+    }
+}
+
+// Custom cell view with hover effects
+class HoverableTableCellView: NSTableCellView {
+    private var trackingArea: NSTrackingArea?
+    
+    override func awakeFromNib() {
+        super.awakeFromNib()
+        setupTrackingArea()
+    }
+    
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupTrackingArea()
+    }
+    
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupTrackingArea()
+    }
+    
+    private func setupTrackingArea() {
+        trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            owner: self,
+            userInfo: nil
+        )
+        if let trackingArea = trackingArea {
+            addTrackingArea(trackingArea)
+        }
+    }
+    
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        
+        if let trackingArea = trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        
+        trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            owner: self,
+            userInfo: nil
+        )
+        
+        if let trackingArea = trackingArea {
+            addTrackingArea(trackingArea)
+        }
+    }
+    
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            context.allowsImplicitAnimation = true
+            layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.06).cgColor
+        }
+    }
+    
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.allowsImplicitAnimation = true
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
+    }
+    
+    override var wantsUpdateLayer: Bool {
+        return true
+    }
+    
+    override func updateLayer() {
+        layer?.cornerRadius = 0
     }
 }

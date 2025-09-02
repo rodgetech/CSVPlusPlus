@@ -1,0 +1,23 @@
+{
+  "images" : [
+    {
+      "filename" : "Generated Image September 01, 2025 - 5_06PM.png",
+      "idiom" : "universal",
+      "scale" : "1x"
+    },
+    {
+      "filename" : "Generated Image September 01, 2025 - 5_06PM 1.png",
+      "idiom" : "universal",
+      "scale" : "2x"
+    },
+    {
+      "filename" : "Generated Image September 01, 2025 - 5_06PM 2.png",
+      "idiom" : "universal",
+      "scale" : "3x"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
