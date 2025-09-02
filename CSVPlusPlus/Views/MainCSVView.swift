@@ -266,7 +266,7 @@ struct WelcomeView: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 96, height: 96)
             
-            Text("CSV Analyzer")
+            Text("CSV DB")
                 .font(.largeTitle)
                 .fontWeight(.bold)
             
