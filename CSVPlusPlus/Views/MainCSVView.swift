@@ -21,7 +21,7 @@ struct MainCSVView: View {
                 VStack(spacing: 0) {
                     // View mode segmented control
                     HStack {
-                        Picker("View Mode", selection: $selectedViewMode) {
+                        Picker("", selection: $selectedViewMode) {
                             ForEach(ViewMode.allCases) { mode in
                                 Text(mode.rawValue).tag(mode)
                             }
@@ -45,28 +45,6 @@ struct MainCSVView: View {
                             if let aggregation = dataManager.currentAggregation {
                                 AggregationFooterView(aggregation: aggregation)
                             }
-                            
-                            // Load more button
-                            if dataManager.visibleRows.count < dataManager.filteredRowCount {
-                                HStack {
-                                    Spacer()
-                                    
-                                    Button(action: loadMoreRows) {
-                                        HStack {
-                                            Image(systemName: "arrow.down.circle")
-                                            Text("Load More Rows")
-                                            Text("(\(dataManager.visibleRows.count) of \(dataManager.filteredRowCount))")
-                                                .foregroundColor(.secondary)
-                                        }
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .disabled(dataManager.isLoading)
-                                    
-                                    Spacer()
-                                }
-                                .padding()
-                                .background(Color(NSColor.controlBackgroundColor))
-                            }
                         }
                     } else {
                         // Query view content
@@ -76,36 +54,85 @@ struct MainCSVView: View {
                     // Status bar
                     HStack {
                         if !dataManager.filterSet.filters.isEmpty {
-                            Text("Filtered: \(dataManager.filteredRowCount.formatted()) of \(dataManager.totalRowCount.formatted())")
-                                .font(.caption)
-                                .foregroundColor(.blue)
+                            HStack(spacing: 4) {
+                                Text("Filtered:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("\(dataManager.filteredRowCount.formatted())")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(.blue)
+                                Text("of")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("\(dataManager.totalRowCount.formatted())")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(.blue)
+                            }
                         } else {
-                            Text("Total: \(dataManager.totalRowCount.formatted())")
-                                .font(.caption)
+                            HStack(spacing: 4) {
+                                Text("Total:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("\(dataManager.totalRowCount.formatted())")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                            }
                         }
                         
                         Spacer()
                         
-                        if selectedViewMode == .table {
-                            Text("Showing: \(dataManager.visibleRows.count.formatted()) rows")
-                                .font(.caption)
-                        } else {
-                            Text("Query Mode")
-                                .font(.caption)
+                        // Load more button in the center
+                        if selectedViewMode == .table && dataManager.visibleRows.count < dataManager.filteredRowCount {
+                            Button(action: loadMoreRows) {
+                                Text("Load Next 100")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(dataManager.isLoading)
                         }
+                        
+                        Spacer()
                         
                         if !dataManager.filterSet.filters.isEmpty && selectedViewMode == .table {
                             Divider()
                                 .frame(height: 12)
-                                .padding(.horizontal, 8)
+                                .padding(.horizontal, 12)
                             
-                            Label("\(dataManager.filterSet.filters.count) filters active", systemImage: "line.horizontal.3.decrease.circle.fill")
+                            HStack(spacing: 4) {
+                                Image(systemName: "line.horizontal.3.decrease.circle.fill")
+                                    .font(.caption)
+                                Text("\(dataManager.filterSet.filters.count) filters active")
+                                    .font(.caption)
+                            }
+                            .foregroundColor(.blue)
+                            
+                            Divider()
+                                .frame(height: 12)
+                                .padding(.horizontal, 12)
+                        }
+                        
+                        if selectedViewMode == .table {
+                            HStack(spacing: 4) {
+                                Text("Showing:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("\(dataManager.visibleRows.count.formatted())")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                Text("rows")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        } else {
+                            Text("Query Mode")
                                 .font(.caption)
-                                .foregroundColor(.blue)
+                                .foregroundColor(.secondary)
                         }
                     }
-                    .padding(.horizontal)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
                     .background(Color(NSColor.controlBackgroundColor))
                 }
             }
@@ -310,26 +337,39 @@ struct AggregationFooterView: View {
             
             Spacer()
             
-            HStack(spacing: 16) {
-                Label("Count: \(aggregation.count.formatted())", systemImage: "number")
+            HStack(spacing: 8) {
+                Text("Count: \(formatLargeNumber(Double(aggregation.count)))")
                     .font(.caption)
+                    .fontWeight(.medium)
                 
-                Label("Distinct: \(aggregation.distinctCount.formatted())", systemImage: "list.bullet")
+                Text("•")
                     .font(.caption)
+                    .foregroundColor(.secondary)
                 
                 if let sum = aggregation.sum {
-                    Label("Sum: \(formatNumber(sum))", systemImage: "plus")
+                    Text("Sum: \(formatLargeNumber(sum))")
                         .font(.caption)
+                        .fontWeight(.medium)
+                    
+                    Text("•")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 
                 if let average = aggregation.average {
-                    Label("Avg: \(formatNumber(average))", systemImage: "chart.bar")
+                    Text("Avg: \(formatLargeNumber(average))")
                         .font(.caption)
+                        .fontWeight(.medium)
+                    
+                    Text("•")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 
                 if let min = aggregation.min, let max = aggregation.max {
-                    Label("Range: \(formatNumber(min)) - \(formatNumber(max))", systemImage: "arrow.left.and.right")
+                    Text("Range: \(formatLargeNumber(min)) - \(formatLargeNumber(max))")
                         .font(.caption)
+                        .fontWeight(.medium)
                 }
             }
         }
@@ -350,6 +390,20 @@ struct AggregationFooterView: View {
         formatter.maximumFractionDigits = 2
         formatter.minimumFractionDigits = 0
         return formatter.string(from: NSNumber(value: value)) ?? String(value)
+    }
+    
+    private func formatLargeNumber(_ value: Double) -> String {
+        let absValue = abs(value)
+        
+        if absValue >= 1_000_000_000 {
+            return String(format: "%.1fB", value / 1_000_000_000)
+        } else if absValue >= 1_000_000 {
+            return String(format: "%.1fM", value / 1_000_000)
+        } else if absValue >= 1_000 {
+            return String(format: "%.0fK", value / 1_000)
+        } else {
+            return String(format: "%.0f", value)
+        }
     }
 }
 

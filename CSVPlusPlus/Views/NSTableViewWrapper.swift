@@ -152,7 +152,7 @@ extension NSTableViewWrapper {
                     
                     // Improve header typography
                     tableColumn.headerCell.title = csvColumn.name
-                    tableColumn.headerCell.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+                    tableColumn.headerCell.font = NSFont.systemFont(ofSize: 13, weight: .heavy)
                     
                     tableView.addTableColumn(tableColumn)
                 }
