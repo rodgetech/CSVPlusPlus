@@ -3,9 +3,15 @@ import CoreGraphics
 
 enum ColumnType {
     case text
-    case numeric
+    case integer
+    case decimal
     case date
     case boolean
+    
+    // Legacy compatibility - will be used in existing code
+    var isNumeric: Bool {
+        return self == .integer || self == .decimal
+    }
     
     static func detect(from samples: [String]) -> ColumnType {
         let nonEmpty = samples.filter { !$0.isEmpty }
@@ -16,28 +22,37 @@ enum ColumnType {
         let dateFormatter2 = DateFormatter()
         dateFormatter2.dateFormat = "MM/dd/yyyy"
         
-        var numericCount = 0
+        var integerCount = 0
+        var decimalCount = 0
         var dateCount = 0
         var boolCount = 0
         
-        for sample in nonEmpty.prefix(100) {
+        let samplesToTest = min(100, nonEmpty.count)
+        for sample in nonEmpty.prefix(samplesToTest) {
             let trimmed = sample.trimmingCharacters(in: .whitespacesAndNewlines)
             
-            if trimmed.lowercased() == "true" || trimmed.lowercased() == "false" ||
-               trimmed == "0" || trimmed == "1" {
+            if trimmed.lowercased() == "true" || trimmed.lowercased() == "false" {
                 boolCount += 1
+            } else if Int(trimmed) != nil {
+                // Check if it's a valid integer first
+                integerCount += 1
             } else if Double(trimmed) != nil {
-                numericCount += 1
+                // If not an integer but is a valid number, it's a decimal
+                decimalCount += 1
             } else if dateFormatter.date(from: trimmed) != nil ||
                       dateFormatter2.date(from: trimmed) != nil {
                 dateCount += 1
             }
         }
         
-        let total = nonEmpty.count
+        let total = samplesToTest
         let threshold = Int(Double(total) * 0.8)
-        if numericCount > threshold {
-            return .numeric
+        
+        if integerCount > threshold {
+            return .integer
+        } else if (integerCount + decimalCount) > threshold {
+            // If mostly numbers but not all integers, treat as decimal
+            return decimalCount > integerCount ? .decimal : .integer
         } else if dateCount > threshold {
             return .date
         } else if boolCount > threshold {

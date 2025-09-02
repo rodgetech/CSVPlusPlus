@@ -20,6 +20,10 @@ struct NSTableViewWrapper: NSViewRepresentable {
         tableView.allowsColumnResizing = true
         tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         
+        // Add visible grid lines
+        tableView.gridStyleMask = [.solidVerticalGridLineMask, .solidHorizontalGridLineMask]
+        tableView.gridColor = NSColor.separatorColor
+        
         // Enable sorting
         tableView.allowsColumnSelection = false
         tableView.allowsMultipleSelection = false
@@ -42,6 +46,17 @@ struct NSTableViewWrapper: NSViewRepresentable {
         
         let coordinator = context.coordinator
         
+        // Set up the callback for updating sort descriptors (only once)
+        if dataManager.updateTableViewSortDescriptors == nil {
+            dataManager.updateTableViewSortDescriptors = { [weak tableView, weak dataManager] in
+                guard let tableView = tableView, let dataManager = dataManager else { return }
+                let newDescriptors = dataManager.getCurrentSortDescriptors()
+                DispatchQueue.main.async {
+                    tableView.sortDescriptors = newDescriptors
+                }
+            }
+        }
+        
         // Update coordinator data - this fixes MainActor issues
         Task { @MainActor in
             let hasNewData = coordinator.updateData(
@@ -53,9 +68,8 @@ struct NSTableViewWrapper: NSViewRepresentable {
             // Update table columns if they changed
             coordinator.updateColumns(in: tableView)
             
-            // Only reload if data actually changed
+            // Only reload if data actually changed - let sorting handle its own reloads
             if hasNewData {
-                print("🔄 NSTableView reloading with \(dataManager.visibleRows.count) rows")
                 tableView.reloadData()
             }
         }
@@ -71,6 +85,7 @@ extension NSTableViewWrapper {
         private var columns: [CSVColumn] = []
         private var rows: [CSVRow] = []
         private var totalRowCount: Int = 0
+        var isSorting = false
         
         // Data cache for windowed loading
         private var dataWindow: [CSVRow] = []
@@ -90,28 +105,56 @@ extension NSTableViewWrapper {
         }
         
         func updateColumns(in tableView: NSTableView) {
-            // Remove existing columns
-            let existingColumns = Array(tableView.tableColumns)
-            for column in existingColumns {
-                tableView.removeTableColumn(column)
+            // Only update columns if they actually changed to preserve sort descriptors
+            let existingColumnCount = tableView.tableColumns.count
+            let newColumnCount = columns.count
+            
+            // Check if column structure changed
+            var columnsChanged = existingColumnCount != newColumnCount
+            if !columnsChanged {
+                for (index, csvColumn) in columns.enumerated() {
+                    if index < existingColumnCount {
+                        let existingColumn = tableView.tableColumns[index]
+                        if existingColumn.identifier.rawValue != csvColumn.name {
+                            columnsChanged = true
+                            break
+                        }
+                    }
+                }
             }
             
-            // Add new columns
-            for (index, csvColumn) in columns.enumerated() {
-                let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(rawValue: "column_\(index)"))
-                tableColumn.title = csvColumn.name
-                tableColumn.minWidth = 80
-                tableColumn.maxWidth = 400
-                tableColumn.width = max(100, csvColumn.width)
+            // Only rebuild columns if they actually changed
+            if columnsChanged {
+                // Store current sort descriptors to restore them
+                let currentSortDescriptors = tableView.sortDescriptors
                 
-                // Configure sorting
-                let sortDescriptor = NSSortDescriptor(key: csvColumn.name, ascending: true)
-                tableColumn.sortDescriptorPrototype = sortDescriptor
+                // Remove existing columns
+                let existingColumns = Array(tableView.tableColumns)
+                for column in existingColumns {
+                    tableView.removeTableColumn(column)
+                }
                 
-                // Set cell identifier for performance
-                tableColumn.headerCell.title = csvColumn.name
+                // Add new columns
+                for (_, csvColumn) in columns.enumerated() {
+                    let columnIdentifier = NSUserInterfaceItemIdentifier(rawValue: csvColumn.name)
+                    let tableColumn = NSTableColumn(identifier: columnIdentifier)
+                    tableColumn.title = csvColumn.name
+                    tableColumn.minWidth = 80
+                    tableColumn.maxWidth = 400
+                    tableColumn.width = max(100, csvColumn.width)
+                    
+                    // Set up sort descriptor prototypes
+                    let sortDescriptor = NSSortDescriptor(key: csvColumn.name, ascending: true)
+                    tableColumn.sortDescriptorPrototype = sortDescriptor
+                    
+                    tableColumn.headerCell.title = csvColumn.name
+                    tableView.addTableColumn(tableColumn)
+                }
                 
-                tableView.addTableColumn(tableColumn)
+                // Restore sort descriptors if they're still valid
+                if !currentSortDescriptors.isEmpty {
+                    tableView.sortDescriptors = currentSortDescriptors
+                }
             }
         }
         
@@ -127,9 +170,8 @@ extension NSTableViewWrapper {
             
             let identifier = tableColumn.identifier
             
-            // Extract column index from identifier
-            let columnIndexStr = identifier.rawValue.replacingOccurrences(of: "column_", with: "")
-            guard let columnIndex = Int(columnIndexStr),
+            // Find column index by name
+            guard let columnIndex = columns.firstIndex(where: { $0.name == identifier.rawValue }),
                   columnIndex < columns.count else { return nil }
             
             // Get or create cell view
@@ -166,7 +208,7 @@ extension NSTableViewWrapper {
             // Set alignment based on column type
             let column = columns[columnIndex]
             switch column.type {
-            case .numeric:
+            case .integer, .decimal:
                 cellView?.textField?.alignment = .right
             case .boolean:
                 cellView?.textField?.alignment = .center
@@ -190,18 +232,16 @@ extension NSTableViewWrapper {
         // MARK: - NSTableViewDelegate
         
         func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
-            guard let sortDescriptor = tableView.sortDescriptors.first,
-                  let key = sortDescriptor.key else { return }
+            let sortDescriptors = tableView.sortDescriptors
             
-            // Find column by name
-            if let columnIndex = columns.firstIndex(where: { $0.name == key }) {
-                Task { @MainActor in
-                    // Update data manager sort
-                    await self.dataManager?.applySortFromTableView(
-                        columnIndex: columnIndex,
-                        ascending: sortDescriptor.ascending
-                    )
-                }
+            guard !sortDescriptors.isEmpty else {
+                return
+            }
+            
+            // AppKit handles all the complexity - just convert to SQL and reload
+            Task { @MainActor in
+                await self.dataManager?.loadMultiSortedData(sortDescriptors: sortDescriptors)
+                tableView.reloadData()
             }
         }
         
@@ -211,6 +251,18 @@ extension NSTableViewWrapper {
         
         func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
             return true // Allow row selection
+        }
+        
+        func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
+            // Handle column header clicks for aggregation selection
+            let columnIdentifier = tableColumn.identifier.rawValue
+            guard let column = columns.first(where: { $0.name == columnIdentifier }) else {
+                return
+            }
+            
+            Task { @MainActor in
+                dataManager?.selectColumnForAggregation(column)
+            }
         }
     }
 }

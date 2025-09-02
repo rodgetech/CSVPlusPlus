@@ -20,15 +20,19 @@ class SQLiteCSVHandler {
     // MARK: - Database Management
     
     func openDatabase() throws {
-        if sqlite3_open(dbPath, &db) != SQLITE_OK {
+        // Use SQLITE_OPEN_FULLMUTEX for thread safety
+        if sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) != SQLITE_OK {
             throw SQLiteCSVError.databaseError("Cannot open database")
         }
         
-        // Enable optimizations
-        sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil)
-        sqlite3_exec(db, "PRAGMA synchronous=NORMAL", nil, nil, nil)
-        sqlite3_exec(db, "PRAGMA cache_size=10000", nil, nil, nil)
-        sqlite3_exec(db, "PRAGMA temp_store=MEMORY", nil, nil, nil)
+        // Aggressive optimizations for import speed
+        sqlite3_exec(db, "PRAGMA journal_mode = OFF", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA synchronous = OFF", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA cache_size = 50000", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA locking_mode = EXCLUSIVE", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA temp_store = MEMORY", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA mmap_size = 268435456", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA page_size = 32768", nil, nil, nil)
     }
     
     func closeDatabase() {
@@ -44,27 +48,37 @@ class SQLiteCSVHandler {
     func importCSV(from url: URL, progress: @escaping (Double, String) -> Void) async throws -> [CSVColumn] {
         try openDatabase()
         
-        // Read header and detect column types
-        let file = try FileHandle(forReadingFrom: url)
-        defer { file.closeFile() }
+        // Read entire file into memory for faster processing (if file is reasonable size)
+        let fileSize = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64 ?? 0
         
-        // Read first line for headers
-        guard let headerData = try file.readLine(),
-              let headerLine = String(data: headerData, encoding: .utf8) else {
-            throw SQLiteCSVError.readError("Cannot read CSV header")
+        // Use memory-mapped reading for large files
+        let fileData: Data
+        if fileSize < 500_000_000 { // Less than 500MB - read into memory
+            fileData = try Data(contentsOf: url, options: .mappedIfSafe)
+        } else {
+            fileData = try Data(contentsOf: url, options: .alwaysMapped)
         }
         
-        let headers = parseCSVLine(headerLine).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        print("📊 SQLite Parsed headers: \(headers)")
-        print("📊 SQLite Header count: \(headers.count)")
-        print("📊 SQLite Raw header line: '\(headerLine)'")
+        // Parse CSV data
+        let csvString = String(data: fileData, encoding: .utf8) ?? ""
+        // Handle both Unix (\n) and Windows (\r\n) line endings properly
+        let normalizedString = csvString.replacingOccurrences(of: "\r\n", with: "\n")
+                                        .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalizedString.components(separatedBy: "\n")
         
-        // Sample first 100 rows for type detection
+        guard !lines.isEmpty else {
+            throw SQLiteCSVError.readError("Empty CSV file")
+        }
+        
+        // Parse headers
+        let headers = parseCSVLine(lines[0]).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        
+        // Sample rows for type detection
         var sampleRows: [[String]] = []
-        for _ in 0..<100 {
-            guard let lineData = try file.readLine(),
-                  let line = String(data: lineData, encoding: .utf8) else { break }
-            sampleRows.append(parseCSVLine(line))
+        for i in 1..<min(201, lines.count) {
+            if !lines[i].isEmpty {
+                sampleRows.append(parseCSVLine(lines[i]))
+            }
         }
         
         // Detect column types
@@ -79,42 +93,45 @@ class SQLiteCSVHandler {
         // Create table
         try createTable()
         
-        // Reset file to beginning
-        file.seek(toFileOffset: 0)
-        _ = try file.readLine() // Skip header
+        // Prepare batch insert statement once
+        let placeholders = columns.map { _ in "?" }.joined(separator: ", ")
+        let insertSQL = "INSERT INTO \(tableName) (\(columns.map { $0.name }.joined(separator: ", "))) VALUES (\(placeholders))"
         
-        // Import data in batches
-        let fileSize = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64 ?? 0
-        var bytesRead: Int64 = 0
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, insertSQL, -1, &stmt, nil) == SQLITE_OK else {
+            throw SQLiteCSVError.databaseError("Cannot prepare insert statement")
+        }
+        defer { sqlite3_finalize(stmt) }
+        
+        // Import data with much larger batch size
         var rowCount = 0
-        let batchSize = 1000
+        let batchSize = 25000 // Much larger batch size for better performance
         var batch: [[String]] = []
+        batch.reserveCapacity(batchSize)
         
-        // Start transaction for better performance and data consistency
-        sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil)
+        // Start transaction
+        sqlite3_exec(db, "BEGIN EXCLUSIVE TRANSACTION", nil, nil, nil)
         
-        while let lineData = try file.readLine() {
-            bytesRead += Int64(lineData.count)
-            let line = String(data: lineData, encoding: .utf8) ?? ""
-            let values = parseCSVLine(line).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        // Process all lines
+        for i in 1..<lines.count {
+            if lines[i].isEmpty { continue }
             
-            // Debug: Print first few data rows during import
-            if rowCount < 3 {
-                print("📊 SQLite Import row \(rowCount): '\(line.prefix(200))'")
-                print("📊 SQLite Parsed values[\(values.count)]: \(values.prefix(5))")
-            }
+            let values = parseCSVLine(lines[i]).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             
             if values.count == headers.count {
                 batch.append(values)
                 rowCount += 1
                 
                 if batch.count >= batchSize {
-                    try insertBatch(batch)
-                    batch.removeAll()
+                    try insertBatchOptimized(batch, stmt: stmt)
+                    batch.removeAll(keepingCapacity: true)
                     
-                    let progressValue = Double(bytesRead) / Double(fileSize)
-                    await MainActor.run {
-                        progress(progressValue, "Imported \(rowCount.formatted()) rows...")
+                    if rowCount % 100000 == 0 { // Update progress less frequently
+                        let progressValue = Double(i) / Double(lines.count)
+                        let formattedCount = rowCount.formatted()
+                        await MainActor.run {
+                            progress(progressValue, "Imported \(formattedCount) rows...")
+                        }
                     }
                 }
             }
@@ -122,20 +139,27 @@ class SQLiteCSVHandler {
         
         // Insert remaining batch
         if !batch.isEmpty {
-            try insertBatch(batch)
+            try insertBatchOptimized(batch, stmt: stmt)
         }
         
         // Commit transaction
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
         
-        // Create indexes for better performance
+        // Create indexes AFTER import (in same thread to avoid multi-threading issues)
         try createIndexes()
         
-        // Debug: Inspect database after import
-        try inspectDatabase()
+        // Re-enable normal pragmas for queries
+        sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA synchronous = NORMAL", nil, nil, nil)
         
+        // Debug: Inspect database after import
+        if rowCount < 1000 {
+            try inspectDatabase()
+        }
+        
+        let finalCount = rowCount.formatted()
         await MainActor.run {
-            progress(1.0, "Import complete: \(rowCount.formatted()) rows")
+            progress(1.0, "Import complete: \(finalCount) rows")
         }
         
         return columns
@@ -146,7 +170,8 @@ class SQLiteCSVHandler {
         
         for column in columns {
             let columnName = column.name
-            let dataType = column.type == .numeric ? "REAL" : "TEXT"
+            let dataType = column.type.isNumeric ? 
+                (column.type == .integer ? "INTEGER" : "REAL") : "TEXT"
             createSQL += ", \(columnName) \(dataType)"
         }
         createSQL += ")"
@@ -157,9 +182,10 @@ class SQLiteCSVHandler {
     }
     
     private func createIndexes() throws {
-        // Create index on first few columns for sorting
-        for column in columns.prefix(5) {
-            let indexSQL = "CREATE INDEX IF NOT EXISTS idx_\(column.name) ON \(tableName)(\(column.name))"
+        // Create a single covering index instead of multiple indexes
+        if columns.count > 0 {
+            let indexColumns = columns.prefix(5).map { $0.name }.joined(separator: ", ")
+            let indexSQL = "CREATE INDEX IF NOT EXISTS idx_covering ON \(tableName)(\(indexColumns))"
             sqlite3_exec(db, indexSQL, nil, nil, nil)
         }
     }
@@ -174,23 +200,17 @@ class SQLiteCSVHandler {
         }
         defer { sqlite3_finalize(stmt) }
         
-        for (rowNum, row) in rows.enumerated() {
-            if rowNum < 3 {
-                print("📊 SQLite Inserting row \(rowNum): \(row.prefix(5))")
-                print("📊 SQLite Column mapping:")
-                for (index, value) in row.enumerated() {
-                    if index < columns.count {
-                        print("📊   [\(index)] \(columns[index].name) = '\(value)'")
-                    }
-                }
-            }
+        for (_, row) in rows.enumerated() {
             for (index, value) in row.enumerated() {
                 if index < columns.count {
-                    if columns[index].type == .numeric, let doubleValue = Double(value) {
+                    let columnType = columns[index].type
+                    if columnType == .integer, let intValue = Int(value) {
+                        sqlite3_bind_int64(stmt, Int32(index + 1), Int64(intValue))
+                    } else if columnType.isNumeric, let doubleValue = Double(value) {
                         sqlite3_bind_double(stmt, Int32(index + 1), doubleValue)
                     } else {
                         // Properly bind Swift String to SQLite with TRANSIENT to copy the data
-                        value.withCString { cString in
+                        _ = value.withCString { cString in
                             sqlite3_bind_text(stmt, Int32(index + 1), cString, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
                         }
                     }
@@ -202,14 +222,52 @@ class SQLiteCSVHandler {
         }
     }
     
+    private func insertBatchOptimized(_ rows: [[String]], stmt: OpaquePointer?) throws {
+        for row in rows {
+            for (index, value) in row.enumerated() {
+                if index < columns.count {
+                    let columnType = columns[index].type
+                    if columnType == .integer {
+                        if let intValue = Int(value) {
+                            sqlite3_bind_int64(stmt, Int32(index + 1), Int64(intValue))
+                        } else {
+                            sqlite3_bind_null(stmt, Int32(index + 1))
+                        }
+                    } else if columnType.isNumeric {
+                        if let doubleValue = Double(value) {
+                            sqlite3_bind_double(stmt, Int32(index + 1), doubleValue)
+                        } else {
+                            sqlite3_bind_null(stmt, Int32(index + 1))
+                        }
+                    } else {
+                        // Use SQLITE_TRANSIENT to ensure data is copied
+                        _ = value.withCString { cString in
+                            sqlite3_bind_text(stmt, Int32(index + 1), cString, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                        }
+                    }
+                }
+            }
+            
+            sqlite3_step(stmt)
+            sqlite3_clear_bindings(stmt)
+            sqlite3_reset(stmt)
+        }
+    }
+    
     // MARK: - Query Methods
     
     func getRows(offset: Int, limit: Int, sortColumn: String? = nil, sortAscending: Bool = true, filters: [String] = []) throws -> [CSVRow] {
-        var querySQL = "SELECT \(columns.map { $0.name }.joined(separator: ", ")) FROM \(tableName)"
+        // Legacy single-column sorting - convert to multi-column format
+        var sortClauses: [String] = []
+        if let sortColumn = sortColumn {
+            sortClauses = ["\(sortColumn) \(sortAscending ? "ASC" : "DESC")"]
+        }
         
-        // Debug: Print column info
-        print("🔍 SQLite columns: \(columns.map { "\($0.name)(idx:\($0.index))" }.joined(separator: ", "))")
-        print("🔍 SQLite query: \(querySQL)")
+        return try getRowsWithMultiSort(offset: offset, limit: limit, sortClauses: sortClauses, filters: filters)
+    }
+    
+    func getRowsWithMultiSort(offset: Int, limit: Int, sortClauses: [String], filters: [String] = []) throws -> [CSVRow] {
+        var querySQL = "SELECT \(columns.map { $0.name }.joined(separator: ", ")) FROM \(tableName)"
         
         // Add WHERE clause for filters
         if !filters.isEmpty {
@@ -217,8 +275,8 @@ class SQLiteCSVHandler {
         }
         
         // Add ORDER BY clause
-        if let sortColumn = sortColumn {
-            querySQL += " ORDER BY \(sortColumn) \(sortAscending ? "ASC" : "DESC")"
+        if !sortClauses.isEmpty {
+            querySQL += " ORDER BY " + sortClauses.joined(separator: ", ")
         } else {
             querySQL += " ORDER BY row_id"
         }
@@ -229,7 +287,6 @@ class SQLiteCSVHandler {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, querySQL, -1, &stmt, nil) == SQLITE_OK else {
             let errorMsg = String(cString: sqlite3_errmsg(db))
-            print("❌ SQLite prepare error: \(errorMsg)")
             throw SQLiteCSVError.databaseError("Cannot prepare select statement: \(errorMsg)")
         }
         defer { sqlite3_finalize(stmt) }
@@ -241,34 +298,29 @@ class SQLiteCSVHandler {
             
             for i in 0..<columns.count {
                 let columnIndex = Int32(i)
-                if let cString = sqlite3_column_text(stmt, columnIndex) {
-                    let value = String(cString: cString)
-                    values.append(value)
-                    
-                    // Debug: Print first few rows and columns
-                    if rows.count < 3 && i < 5 {
-                        print("🔍 SQLite data[row:\(rows.count)][col:\(i):\(columns[i].name)] = '\(value)'")
-                    }
-                } else {
+                let columnType = columns[i].type
+                
+                if sqlite3_column_type(stmt, columnIndex) == SQLITE_NULL {
                     values.append("")
-                    
-                    // Debug: Print empty values
-                    if rows.count < 3 && i < 5 {
-                        print("🔍 SQLite data[row:\(rows.count)][col:\(i):\(columns[i].name)] = '' (NULL)")
+                } else if columnType == .integer {
+                    let intValue = sqlite3_column_int64(stmt, columnIndex)
+                    values.append(String(intValue))
+                } else if columnType.isNumeric {
+                    let doubleValue = sqlite3_column_double(stmt, columnIndex)
+                    values.append(String(doubleValue))
+                } else {
+                    if let cString = sqlite3_column_text(stmt, columnIndex) {
+                        let value = String(cString: cString)
+                        values.append(value)
+                    } else {
+                        values.append("")
                     }
                 }
             }
             
             rows.append(CSVRow(id: rowCounter, values: values))
             rowCounter += 1
-            
-            // Debug: Print first few rows
-            if rows.count <= 3 {
-                print("🔍 SQLite Row \(rowCounter - 1): \(values.prefix(3))")
-            }
         }
-        
-        print("🔍 SQLite getRows returning \(rows.count) rows")
         
         return rows
     }
@@ -295,6 +347,91 @@ class SQLiteCSVHandler {
     
     func getColumns() -> [CSVColumn] {
         return columns
+    }
+    
+    // MARK: - Aggregation Methods
+    
+    func getAggregation(for column: CSVColumn, filters: [String] = []) throws -> AggregationResult? {
+        // Build the appropriate aggregation query based on column type
+        let columnName = column.name
+        var aggregationSQL: String
+        
+        if column.type.isNumeric {
+            aggregationSQL = """
+                SELECT 
+                    COUNT(*) as count,
+                    COUNT(DISTINCT \(columnName)) as distinct_count,
+                    COUNT(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN 1 END) as non_empty_count,
+                    SUM(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN CAST(\(columnName) AS REAL) END) as sum,
+                    AVG(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN CAST(\(columnName) AS REAL) END) as avg,
+                    MIN(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN CAST(\(columnName) AS REAL) END) as min,
+                    MAX(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN CAST(\(columnName) AS REAL) END) as max
+                FROM \(tableName)
+            """
+        } else {
+            aggregationSQL = """
+                SELECT 
+                    COUNT(*) as count,
+                    COUNT(DISTINCT \(columnName)) as distinct_count,
+                    COUNT(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN 1 END) as non_empty_count,
+                    NULL as sum,
+                    NULL as avg,
+                    NULL as min,
+                    NULL as max
+                FROM \(tableName)
+            """
+        }
+        
+        // Add WHERE clause for filters
+        if !filters.isEmpty {
+            aggregationSQL += " WHERE " + filters.joined(separator: " AND ")
+        }
+        
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, aggregationSQL, -1, &stmt, nil) == SQLITE_OK else {
+            let errorMsg = String(cString: sqlite3_errmsg(db))
+            throw SQLiteCSVError.databaseError("Cannot prepare aggregation statement: \(errorMsg)")
+        }
+        defer { sqlite3_finalize(stmt) }
+        
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            _ = Int(sqlite3_column_int(stmt, 0)) // total count (unused for this calculation)
+            let distinctCount = Int(sqlite3_column_int(stmt, 1))
+            let nonEmptyCount = Int(sqlite3_column_int(stmt, 2))
+            
+            var sum: Double? = nil
+            var average: Double? = nil
+            var min: Double? = nil
+            var max: Double? = nil
+            
+            // Only get numeric aggregations if column is numeric
+            if column.type.isNumeric {
+                if sqlite3_column_type(stmt, 3) != SQLITE_NULL {
+                    sum = sqlite3_column_double(stmt, 3)
+                }
+                if sqlite3_column_type(stmt, 4) != SQLITE_NULL {
+                    average = sqlite3_column_double(stmt, 4)
+                }
+                if sqlite3_column_type(stmt, 5) != SQLITE_NULL {
+                    min = sqlite3_column_double(stmt, 5)
+                }
+                if sqlite3_column_type(stmt, 6) != SQLITE_NULL {
+                    max = sqlite3_column_double(stmt, 6)
+                }
+            }
+            
+            return AggregationResult(
+                columnName: column.name,
+                sum: sum,
+                average: average,
+                min: min,
+                max: max,
+                count: nonEmptyCount,
+                distinctCount: distinctCount
+            )
+        }
+        
+        return nil
     }
     
     // MARK: - Filter Building
@@ -329,24 +466,37 @@ class SQLiteCSVHandler {
         var result: [String] = []
         var current = ""
         var inQuotes = false
-        var previousChar: Character?
+        let chars = Array(line)
+        var i = 0
         
-        for char in line {
+        while i < chars.count {
+            let char = chars[i]
+            
             if char == "\"" {
-                if inQuotes && previousChar == "\"" {
-                    current.append(char)
-                    previousChar = nil
-                    continue
+                if inQuotes {
+                    // Check if next char is also a quote (escaped quote)
+                    if i + 1 < chars.count && chars[i + 1] == "\"" {
+                        current.append("\"")
+                        i += 2 // Skip both quotes
+                        continue
+                    } else {
+                        inQuotes = false
+                    }
+                } else {
+                    inQuotes = true
                 }
-                inQuotes.toggle()
+                i += 1
             } else if char == "," && !inQuotes {
                 result.append(current)
                 current = ""
+                i += 1
             } else {
                 current.append(char)
+                i += 1
             }
-            previousChar = char
         }
+        
+        // Don't forget the last field
         result.append(current)
         
         return result
@@ -391,7 +541,7 @@ class SQLiteCSVHandler {
             let columnName = String(cString: sqlite3_column_text(stmt, 1))
             let columnType = String(cString: sqlite3_column_text(stmt, 2))
             let notNull = sqlite3_column_int(stmt, 3)
-            let defaultValue = sqlite3_column_text(stmt, 4)
+            _ = sqlite3_column_text(stmt, 4) // defaultValue (unused)
             let primaryKey = sqlite3_column_int(stmt, 5)
             
             print("🔍   Column \(columnId): \(columnName) (\(columnType)) notNull:\(notNull) pk:\(primaryKey)")

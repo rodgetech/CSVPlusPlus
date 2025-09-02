@@ -39,7 +39,7 @@ struct SortPanel: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    VStack(spacing: 12) {
+                    VStack(spacing: 16) {
                         ForEach(dataManager.sortSet.criteria.sorted { $0.priority < $1.priority }) { sort in
                             SortRow(
                                 sort: sort,
@@ -48,13 +48,14 @@ struct SortPanel: View {
                             )
                         }
                     }
+                    .padding(.vertical, 8)
                 }
             }
             
             Spacer()
         }
         .padding()
-        .frame(width: 500, height: 400)
+        .frame(width: 650, height: 500)
     }
 }
 
@@ -64,48 +65,71 @@ struct SortRow: View {
     @ObservedObject var dataManager: CSVDataManager
     
     var body: some View {
-        HStack(spacing: 12) {
-            Text("Priority \(sort.priority + 1)")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .frame(width: 60)
-            
-            Picker("Column", selection: binding(for: \.columnIndex)) {
-                ForEach(columns) { column in
-                    Text(column.name).tag(column.index)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Priority \(sort.priority + 1)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                HStack(spacing: 8) {
+                    Button(action: { moveSortUp() }) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(sort.priority == 0)
+                    
+                    Button(action: { moveSortDown() }) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(sort.priority == dataManager.sortSet.criteria.count - 1)
+                    
+                    Button(action: { dataManager.removeSort(sort) }) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .frame(width: 180)
             
-            Picker("Direction", selection: binding(for: \.direction)) {
-                ForEach(SortDirection.allCases, id: \.self) { direction in
-                    Text(direction.rawValue).tag(direction)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Column")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    
+                    Picker("", selection: binding(for: \.columnIndex)) {
+                        ForEach(columns) { column in
+                            Text(column.name).tag(column.index)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity)
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Direction")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    
+                    Picker("", selection: binding(for: \.direction)) {
+                        ForEach(SortDirection.allCases, id: \.self) { direction in
+                            Text(direction.rawValue).tag(direction)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 160)
                 }
             }
-            .pickerStyle(.segmented)
-            .frame(width: 150)
-            
-            Button(action: { moveSortUp() }) {
-                Image(systemName: "chevron.up")
-            }
-            .buttonStyle(.plain)
-            .disabled(sort.priority == 0)
-            
-            Button(action: { moveSortDown() }) {
-                Image(systemName: "chevron.down")
-            }
-            .buttonStyle(.plain)
-            .disabled(sort.priority == dataManager.sortSet.criteria.count - 1)
-            
-            Button(action: { dataManager.removeSort(sort) }) {
-                Image(systemName: "trash")
-                    .foregroundColor(.red)
-            }
-            .buttonStyle(.plain)
         }
-        .padding(8)
+        .padding(12)
         .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(6)
+        .cornerRadius(8)
     }
     
     func binding<T>(for keyPath: WritableKeyPath<SortCriteria, T>) -> Binding<T> {

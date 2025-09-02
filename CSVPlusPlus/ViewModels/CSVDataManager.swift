@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import Combine
 
 @MainActor
 class CSVDataManager: ObservableObject {
@@ -10,19 +9,40 @@ class CSVDataManager: ObservableObject {
             if sqliteHandler != nil {
                 Task { @MainActor in
                     await reloadSQLiteData()
+                    // Update aggregation when filters change
+                    updateAggregationForSelectedColumn()
                 }
             }
         }
     }
     @Published var sortSet = SortSet() {
         didSet {
-            if sqliteHandler != nil {
+            print("🔄 sortSet didSet triggered, ignoring: \(ignoreSortSetChanges)")
+            if !ignoreSortSetChanges && sqliteHandler != nil {
                 Task { @MainActor in
                     await reloadSQLiteData()
+                    // Notify any NSTableView to update its sort descriptors
+                    updateTableViewSortDescriptors?()
                 }
             }
         }
     }
+    
+    // Callback to update NSTableView sort descriptors
+    var updateTableViewSortDescriptors: (() -> Void)?
+    
+    // Convert current sortSet to NSTableView sort descriptors
+    func getCurrentSortDescriptors() -> [NSSortDescriptor] {
+        return sortSet.criteria
+            .sorted { $0.priority < $1.priority }
+            .compactMap { sort -> NSSortDescriptor? in
+                guard sort.columnIndex < columns.count else { return nil }
+                let columnName = columns[sort.columnIndex].name
+                return NSSortDescriptor(key: columnName, ascending: sort.direction == .ascending)
+            }
+    }
+    
+    private var ignoreSortSetChanges = false
     
     @Published var isLoading = false
     @Published var loadingProgress: Double = 0
@@ -34,28 +54,19 @@ class CSVDataManager: ObservableObject {
     @Published var fileName = ""
     
     @Published var selectedColumn: CSVColumn?
+    @Published var selectedColumnForAggregation: CSVColumn?
     @Published var aggregationResults: [AggregationResult] = []
+    @Published var currentAggregation: AggregationResult?
     @Published var visibleRows: [CSVRow] = []
     
     // SQLite integration
     private var sqliteHandler: SQLiteCSVHandler?
-    @Published var tableSortOrder: [SortDescriptor<CSVRow>] = []
     
     let aggregationEngine = AggregationEngine()
-    private var cancellables = Set<AnyCancellable>()
-    
-    init() {
-        setupBindings()
-    }
-    
-    private func setupBindings() {
-        // Removed complex filtering/sorting bindings since SQLite handles this now
-    }
     
     // MARK: - SQLite Methods
     
     func loadCSVWithSQLite(from url: URL) async {
-        print("🚀🚀🚀 loadCSVWithSQLite called for: \(url.lastPathComponent)")
         
         isLoading = true
         loadingProgress = 0
@@ -80,9 +91,14 @@ class CSVDataManager: ObservableObject {
             
             await MainActor.run {
                 self.columns = importedColumns
-                self.totalRowCount = try! self.sqliteHandler!.getTotalCount()
-                self.filteredRowCount = self.totalRowCount
-                print("🚀🚀🚀 SQLite import SUCCESS: \(importedColumns.count) columns, \(self.totalRowCount) rows")
+                do {
+                    self.totalRowCount = try self.sqliteHandler!.getTotalCount()
+                    self.filteredRowCount = self.totalRowCount
+                } catch {
+                    self.totalRowCount = 0
+                    self.filteredRowCount = 0
+                    self.errorMessage = "Error getting row count: \(error.localizedDescription)"
+                }
             }
             
             // Load first page
@@ -94,7 +110,6 @@ class CSVDataManager: ObservableObject {
         } catch {
             await MainActor.run {
                 self.errorMessage = "Error loading CSV: \(error.localizedDescription)"
-                print("❌ SQLite import error: \(error)")
             }
         }
         
@@ -168,6 +183,39 @@ class CSVDataManager: ObservableObject {
         let currentPage = visibleRows.count / pageSize
         
         // Get current sort from sortSet
+        let sort = getCurrentSort()
+        
+        await appendSQLiteData(
+            page: currentPage,
+            pageSize: pageSize,
+            sortColumn: sort.sortColumn,
+            sortAscending: sort.sortAscending
+        )
+    }
+    
+    private func reloadSQLiteData() async {
+        print("🔄 reloadSQLiteData called")
+        
+        // Build sort clauses from sortSet
+        let sortClauses = sortSet.criteria
+            .sorted { $0.priority < $1.priority }
+            .compactMap { sort -> String? in
+                guard sort.columnIndex < columns.count else { return nil }
+                let columnName = columns[sort.columnIndex].name
+                let direction = sort.direction == .ascending ? "ASC" : "DESC"
+                return "\(columnName) \(direction)"
+            }
+        
+        if sortClauses.isEmpty {
+            print("🔄 Reloading with no sort")
+            await loadSQLiteData(page: 0, pageSize: 100)
+        } else {
+            print("🔄 Reloading with multi-sort: \(sortClauses)")
+            await loadSQLiteDataWithMultiSort(page: 0, pageSize: 100, sortClauses: sortClauses)
+        }
+    }
+    
+    private func getCurrentSort() -> (sortColumn: String?, sortAscending: Bool) {
         var sortColumn: String? = nil
         var sortAscending = true
         
@@ -177,16 +225,7 @@ class CSVDataManager: ObservableObject {
             sortAscending = firstSort.direction == .ascending
         }
         
-        await appendSQLiteData(
-            page: currentPage,
-            pageSize: pageSize,
-            sortColumn: sortColumn,
-            sortAscending: sortAscending
-        )
-    }
-    
-    private func reloadSQLiteData() async {
-        await loadSQLiteData(page: 0, pageSize: 100)
+        return (sortColumn: sortColumn, sortAscending: sortAscending)
     }
     
     private func buildSQLFilters() -> [String] {
@@ -204,13 +243,13 @@ class CSVDataManager: ObservableObject {
             case .notEquals:
                 sqlFilters.append("\(columnName) != '\(filter.value)'")
             case .greaterThan:
-                if columns[filter.columnIndex].type == .numeric {
+                if columns[filter.columnIndex].type.isNumeric {
                     sqlFilters.append("\(columnName) > \(filter.value)")
                 } else {
                     sqlFilters.append("\(columnName) > '\(filter.value)'")
                 }
             case .lessThan:
-                if columns[filter.columnIndex].type == .numeric {
+                if columns[filter.columnIndex].type.isNumeric {
                     sqlFilters.append("\(columnName) < \(filter.value)")
                 } else {
                     sqlFilters.append("\(columnName) < '\(filter.value)'")
@@ -237,20 +276,13 @@ class CSVDataManager: ObservableObject {
             let filters = buildSQLFilters()
             
             // Get current sort from sortSet
-            var sortColumn: String? = nil
-            var sortAscending = true
-            
-            if let firstSort = sortSet.criteria.first,
-               firstSort.columnIndex < columns.count {
-                sortColumn = columns[firstSort.columnIndex].name
-                sortAscending = firstSort.direction == .ascending
-            }
+            let sort = getCurrentSort()
             
             let rows = try handler.getRows(
                 offset: offset,
                 limit: limit,
-                sortColumn: sortColumn,
-                sortAscending: sortAscending,
+                sortColumn: sort.sortColumn,
+                sortAscending: sort.sortAscending,
                 filters: filters
             )
             
@@ -265,10 +297,14 @@ class CSVDataManager: ObservableObject {
         }
     }
     
-    func applySortFromTableView(columnIndex: Int, ascending: Bool) async {
-        // Clear existing sorts and add new one
-        sortSet.criteria.removeAll()
+    func loadSortedData(columnIndex: Int, columnName: String, ascending: Bool) async {
+        print("🔄 loadSortedData: \(columnName) ascending=\(ascending)")
         
+        // Update sortSet to keep it in sync with NSTableView, but temporarily ignore changes to prevent circular updates
+        ignoreSortSetChanges = true
+        
+        // Clear existing sorts and add the new one
+        sortSet.criteria.removeAll()
         let newSort = SortCriteria(
             columnIndex: columnIndex,
             direction: ascending ? .ascending : .descending,
@@ -276,8 +312,105 @@ class CSVDataManager: ObservableObject {
         )
         sortSet.criteria.append(newSort)
         
-        // Reload data with new sort
-        await loadSQLiteData(page: 0, pageSize: 100)
+        ignoreSortSetChanges = false
+        
+        // Load fresh sorted data from SQLite - this is the proper approach
+        await loadSQLiteData(page: 0, pageSize: 100, sortColumn: columnName, sortAscending: ascending)
+    }
+    
+    func loadMultiSortedData(sortDescriptors: [NSSortDescriptor]) async {
+        print("🔄 loadMultiSortedData: \(sortDescriptors.count) descriptors")
+        
+        // Convert NSTableView sort descriptors to our internal format
+        ignoreSortSetChanges = true
+        sortSet.criteria.removeAll()
+        
+        for (priority, descriptor) in sortDescriptors.enumerated() {
+            guard let columnName = descriptor.key,
+                  let columnIndex = columns.firstIndex(where: { $0.name == columnName }) else {
+                continue
+            }
+            
+            let sortCriteria = SortCriteria(
+                columnIndex: columnIndex,
+                direction: descriptor.ascending ? .ascending : .descending,
+                priority: priority
+            )
+            sortSet.criteria.append(sortCriteria)
+        }
+        
+        ignoreSortSetChanges = false
+        
+        // Build SQL sort clauses
+        let sortClauses = sortDescriptors.compactMap { descriptor -> String? in
+            guard let columnName = descriptor.key else { return nil }
+            return "\(columnName) \(descriptor.ascending ? "ASC" : "DESC")"
+        }
+        
+        // Load data using multi-column sort
+        await loadSQLiteDataWithMultiSort(page: 0, pageSize: 100, sortClauses: sortClauses)
+    }
+    
+    private func loadSQLiteDataWithMultiSort(page: Int, pageSize: Int, sortClauses: [String]) async {
+        guard let handler = sqliteHandler else { return }
+        
+        do {
+            let filters = buildSQLFilters()
+            let offset = page * pageSize
+            
+            let rows = try handler.getRowsWithMultiSort(
+                offset: offset,
+                limit: pageSize,
+                sortClauses: sortClauses,
+                filters: filters
+            )
+            
+            let totalCount = try handler.getTotalCount(filters: filters)
+            
+            await MainActor.run {
+                if page == 0 {
+                    self.visibleRows = rows
+                } else {
+                    self.visibleRows.append(contentsOf: rows)
+                }
+                self.filteredRowCount = totalCount
+            }
+            
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Error loading multi-sorted data: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    func loadSortedDataSilently(columnIndex: Int, columnName: String, ascending: Bool) async {
+        print("🔄 loadSortedDataSilently: \(columnName) ascending=\(ascending)")
+        
+        // Load data without triggering any UI updates that might interfere with NSTableView sorting
+        guard let handler = sqliteHandler else { return }
+        
+        do {
+            let filters = buildSQLFilters()
+            let rows = try handler.getRows(
+                offset: 0,
+                limit: 100,
+                sortColumn: columnName,
+                sortAscending: ascending,
+                filters: filters
+            )
+            
+            let totalCount = try handler.getTotalCount(filters: filters)
+            
+            await MainActor.run {
+                self.visibleRows = rows
+                self.filteredRowCount = totalCount
+            }
+            
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Error loading sorted data: \(error.localizedDescription)"
+            }
+        }
     }
     
     // MARK: - Filter & Sort Management
@@ -325,6 +458,11 @@ class CSVDataManager: ObservableObject {
         updateAggregations()
     }
     
+    func selectColumnForAggregation(_ column: CSVColumn) {
+        selectedColumnForAggregation = column
+        updateAggregationForSelectedColumn()
+    }
+    
     private func updateAggregations() {
         // TODO: Implement aggregations with SQLite queries
         // For now, calculate from visible rows
@@ -332,8 +470,35 @@ class CSVDataManager: ObservableObject {
             let result = aggregationEngine.calculate(for: visibleRows, column: column)
             aggregationResults = [result]
         } else {
-            aggregationResults = columns.filter { $0.type == .numeric }
+            aggregationResults = columns.filter { $0.type.isNumeric }
                 .map { aggregationEngine.calculate(for: visibleRows, column: $0) }
+        }
+    }
+    
+    private func updateAggregationForSelectedColumn() {
+        guard let column = selectedColumnForAggregation,
+              let handler = sqliteHandler else {
+            currentAggregation = nil
+            return
+        }
+        
+        Task {
+            do {
+                // Use current filters for aggregation
+                let filters = buildSQLFilters()
+                let result = try handler.getAggregation(for: column, filters: filters)
+                
+                // Ensure UI update happens on main thread
+                await MainActor.run {
+                    self.currentAggregation = result
+                    self.objectWillChange.send() // Force SwiftUI update
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Error calculating aggregation: \(error.localizedDescription)"
+                    self.currentAggregation = nil
+                }
+            }
         }
     }
     
@@ -348,6 +513,8 @@ class CSVDataManager: ObservableObject {
         visibleRows = []
         aggregationResults = []
         selectedColumn = nil
+        selectedColumnForAggregation = nil
+        currentAggregation = nil
         fileName = ""
         sqliteHandler = nil
     }

@@ -31,21 +31,21 @@ struct CSVRow: Identifiable, Hashable {
         case .notEquals:
             return value.caseInsensitiveCompare(filter.value) != .orderedSame
         case .greaterThan:
-            if column.type == .numeric,
+            if column.type.isNumeric,
                let numValue = Double(value),
                let filterNum = Double(filter.value) {
                 return numValue > filterNum
             }
             return value > filter.value
         case .lessThan:
-            if column.type == .numeric,
+            if column.type.isNumeric,
                let numValue = Double(value),
                let filterNum = Double(filter.value) {
                 return numValue < filterNum
             }
             return value < filter.value
         case .between:
-            if column.type == .numeric,
+            if column.type.isNumeric,
                let numValue = Double(value),
                let range = filter.numericRange {
                 return numValue >= range.lowerBound && numValue <= range.upperBound
