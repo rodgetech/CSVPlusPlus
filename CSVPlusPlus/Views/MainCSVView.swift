@@ -20,6 +20,11 @@ struct MainCSVView: View {
                 VStack(spacing: 0) {
                     NSTableViewWrapper(dataManager: dataManager)
                     
+                    // Aggregation footer
+                    if let aggregation = dataManager.currentAggregation {
+                        AggregationFooterView(aggregation: aggregation)
+                    }
+                    
                     // Load more button
                     if dataManager.visibleRows.count < dataManager.filteredRowCount {
                         HStack {
@@ -259,6 +264,60 @@ struct LoadingOverlay: View {
             .background(.regularMaterial)
             .cornerRadius(12)
         }
+    }
+}
+
+struct AggregationFooterView: View {
+    let aggregation: AggregationResult
+    
+    var body: some View {
+        HStack {
+            Text("Aggregation for '\(aggregation.columnName)':")
+                .font(.caption)
+                .fontWeight(.medium)
+            
+            Spacer()
+            
+            HStack(spacing: 16) {
+                Label("Count: \(aggregation.count.formatted())", systemImage: "number")
+                    .font(.caption)
+                
+                Label("Distinct: \(aggregation.distinctCount.formatted())", systemImage: "list.bullet")
+                    .font(.caption)
+                
+                if let sum = aggregation.sum {
+                    Label("Sum: \(formatNumber(sum))", systemImage: "plus")
+                        .font(.caption)
+                }
+                
+                if let average = aggregation.average {
+                    Label("Avg: \(formatNumber(average))", systemImage: "chart.bar")
+                        .font(.caption)
+                }
+                
+                if let min = aggregation.min, let max = aggregation.max {
+                    Label("Range: \(formatNumber(min)) - \(formatNumber(max))", systemImage: "arrow.left.and.right")
+                        .font(.caption)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.accentColor.opacity(0.1))
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(.accentColor.opacity(0.3)),
+            alignment: .top
+        )
+    }
+    
+    private func formatNumber(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 2
+        formatter.minimumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: value)) ?? String(value)
     }
 }
 

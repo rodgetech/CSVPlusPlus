@@ -207,7 +207,7 @@ extension NSTableViewWrapper {
             // Set alignment based on column type
             let column = columns[columnIndex]
             switch column.type {
-            case .numeric:
+            case .integer, .decimal:
                 cellView?.textField?.alignment = .right
             case .boolean:
                 cellView?.textField?.alignment = .center
@@ -255,6 +255,18 @@ extension NSTableViewWrapper {
         
         func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
             return true // Allow row selection
+        }
+        
+        func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
+            // Handle column header clicks for aggregation selection
+            let columnIdentifier = tableColumn.identifier.rawValue
+            guard let column = columns.first(where: { $0.name == columnIdentifier }) else {
+                return
+            }
+            
+            Task { @MainActor in
+                dataManager?.selectColumnForAggregation(column)
+            }
         }
     }
 }

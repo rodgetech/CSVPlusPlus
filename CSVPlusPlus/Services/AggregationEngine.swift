@@ -21,7 +21,7 @@ class AggregationEngine {
         var min: Double? = nil
         var max: Double? = nil
         
-        if column.type == .numeric {
+        if column.type.isNumeric {
             let numericValues = nonEmptyValues.compactMap { Double($0) }
             
             if !numericValues.isEmpty {

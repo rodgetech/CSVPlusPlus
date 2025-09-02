@@ -36,7 +36,7 @@ struct SortSet {
                 
                 var comparison: ComparisonResult = .orderedSame
                 
-                if column.type == .numeric,
+                if column.type.isNumeric,
                    let num1 = Double(value1),
                    let num2 = Double(value2) {
                     if num1 < num2 {

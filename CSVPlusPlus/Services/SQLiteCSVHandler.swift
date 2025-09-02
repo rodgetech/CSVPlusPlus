@@ -61,7 +61,10 @@ class SQLiteCSVHandler {
         
         // Parse CSV data
         let csvString = String(data: fileData, encoding: .utf8) ?? ""
-        let lines = csvString.components(separatedBy: .newlines)
+        // Handle both Unix (\n) and Windows (\r\n) line endings properly
+        let normalizedString = csvString.replacingOccurrences(of: "\r\n", with: "\n")
+                                        .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalizedString.components(separatedBy: "\n")
         
         guard !lines.isEmpty else {
             throw SQLiteCSVError.readError("Empty CSV file")
@@ -167,7 +170,8 @@ class SQLiteCSVHandler {
         
         for column in columns {
             let columnName = column.name
-            let dataType = column.type == .numeric ? "REAL" : "TEXT"
+            let dataType = column.type.isNumeric ? 
+                (column.type == .integer ? "INTEGER" : "REAL") : "TEXT"
             createSQL += ", \(columnName) \(dataType)"
         }
         createSQL += ")"
@@ -199,7 +203,10 @@ class SQLiteCSVHandler {
         for (_, row) in rows.enumerated() {
             for (index, value) in row.enumerated() {
                 if index < columns.count {
-                    if columns[index].type == .numeric, let doubleValue = Double(value) {
+                    let columnType = columns[index].type
+                    if columnType == .integer, let intValue = Int(value) {
+                        sqlite3_bind_int64(stmt, Int32(index + 1), Int64(intValue))
+                    } else if columnType.isNumeric, let doubleValue = Double(value) {
                         sqlite3_bind_double(stmt, Int32(index + 1), doubleValue)
                     } else {
                         // Properly bind Swift String to SQLite with TRANSIENT to copy the data
@@ -219,7 +226,14 @@ class SQLiteCSVHandler {
         for row in rows {
             for (index, value) in row.enumerated() {
                 if index < columns.count {
-                    if columns[index].type == .numeric {
+                    let columnType = columns[index].type
+                    if columnType == .integer {
+                        if let intValue = Int(value) {
+                            sqlite3_bind_int64(stmt, Int32(index + 1), Int64(intValue))
+                        } else {
+                            sqlite3_bind_null(stmt, Int32(index + 1))
+                        }
+                    } else if columnType.isNumeric {
                         if let doubleValue = Double(value) {
                             sqlite3_bind_double(stmt, Int32(index + 1), doubleValue)
                         } else {
@@ -270,16 +284,6 @@ class SQLiteCSVHandler {
         // Add pagination
         querySQL += " LIMIT \(limit) OFFSET \(offset)"
         
-        // Print the generated SQL query
-        print("🔍 SQL Query: \(querySQL)")
-        
-        if !sortClauses.isEmpty {
-            print("🔍 Sort Clauses: \(sortClauses)")
-        }
-        if !filters.isEmpty {
-            print("🔍 Filters: \(filters)")
-        }
-        
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, querySQL, -1, &stmt, nil) == SQLITE_OK else {
             let errorMsg = String(cString: sqlite3_errmsg(db))
@@ -294,11 +298,23 @@ class SQLiteCSVHandler {
             
             for i in 0..<columns.count {
                 let columnIndex = Int32(i)
-                if let cString = sqlite3_column_text(stmt, columnIndex) {
-                    let value = String(cString: cString)
-                    values.append(value)
-                } else {
+                let columnType = columns[i].type
+                
+                if sqlite3_column_type(stmt, columnIndex) == SQLITE_NULL {
                     values.append("")
+                } else if columnType == .integer {
+                    let intValue = sqlite3_column_int64(stmt, columnIndex)
+                    values.append(String(intValue))
+                } else if columnType.isNumeric {
+                    let doubleValue = sqlite3_column_double(stmt, columnIndex)
+                    values.append(String(doubleValue))
+                } else {
+                    if let cString = sqlite3_column_text(stmt, columnIndex) {
+                        let value = String(cString: cString)
+                        values.append(value)
+                    } else {
+                        values.append("")
+                    }
                 }
             }
             
@@ -331,6 +347,91 @@ class SQLiteCSVHandler {
     
     func getColumns() -> [CSVColumn] {
         return columns
+    }
+    
+    // MARK: - Aggregation Methods
+    
+    func getAggregation(for column: CSVColumn, filters: [String] = []) throws -> AggregationResult? {
+        // Build the appropriate aggregation query based on column type
+        let columnName = column.name
+        var aggregationSQL: String
+        
+        if column.type.isNumeric {
+            aggregationSQL = """
+                SELECT 
+                    COUNT(*) as count,
+                    COUNT(DISTINCT \(columnName)) as distinct_count,
+                    COUNT(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN 1 END) as non_empty_count,
+                    SUM(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN CAST(\(columnName) AS REAL) END) as sum,
+                    AVG(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN CAST(\(columnName) AS REAL) END) as avg,
+                    MIN(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN CAST(\(columnName) AS REAL) END) as min,
+                    MAX(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN CAST(\(columnName) AS REAL) END) as max
+                FROM \(tableName)
+            """
+        } else {
+            aggregationSQL = """
+                SELECT 
+                    COUNT(*) as count,
+                    COUNT(DISTINCT \(columnName)) as distinct_count,
+                    COUNT(CASE WHEN \(columnName) IS NOT NULL AND \(columnName) != '' THEN 1 END) as non_empty_count,
+                    NULL as sum,
+                    NULL as avg,
+                    NULL as min,
+                    NULL as max
+                FROM \(tableName)
+            """
+        }
+        
+        // Add WHERE clause for filters
+        if !filters.isEmpty {
+            aggregationSQL += " WHERE " + filters.joined(separator: " AND ")
+        }
+        
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, aggregationSQL, -1, &stmt, nil) == SQLITE_OK else {
+            let errorMsg = String(cString: sqlite3_errmsg(db))
+            throw SQLiteCSVError.databaseError("Cannot prepare aggregation statement: \(errorMsg)")
+        }
+        defer { sqlite3_finalize(stmt) }
+        
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            _ = Int(sqlite3_column_int(stmt, 0)) // total count (unused for this calculation)
+            let distinctCount = Int(sqlite3_column_int(stmt, 1))
+            let nonEmptyCount = Int(sqlite3_column_int(stmt, 2))
+            
+            var sum: Double? = nil
+            var average: Double? = nil
+            var min: Double? = nil
+            var max: Double? = nil
+            
+            // Only get numeric aggregations if column is numeric
+            if column.type.isNumeric {
+                if sqlite3_column_type(stmt, 3) != SQLITE_NULL {
+                    sum = sqlite3_column_double(stmt, 3)
+                }
+                if sqlite3_column_type(stmt, 4) != SQLITE_NULL {
+                    average = sqlite3_column_double(stmt, 4)
+                }
+                if sqlite3_column_type(stmt, 5) != SQLITE_NULL {
+                    min = sqlite3_column_double(stmt, 5)
+                }
+                if sqlite3_column_type(stmt, 6) != SQLITE_NULL {
+                    max = sqlite3_column_double(stmt, 6)
+                }
+            }
+            
+            return AggregationResult(
+                columnName: column.name,
+                sum: sum,
+                average: average,
+                min: min,
+                max: max,
+                count: nonEmptyCount,
+                distinctCount: distinctCount
+            )
+        }
+        
+        return nil
     }
     
     // MARK: - Filter Building

@@ -81,7 +81,7 @@ struct FilterRow: View {
             
             Picker("Operation", selection: binding(for: \.operation)) {
                 ForEach(FilterOperation.allCases, id: \.self) { operation in
-                    if !operation.requiresNumeric || selectedColumn?.type == .numeric {
+                    if !operation.requiresNumeric || selectedColumn?.type.isNumeric == true {
                         Text(operation.rawValue).tag(operation)
                     }
                 }

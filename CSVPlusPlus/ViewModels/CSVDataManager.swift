@@ -9,6 +9,8 @@ class CSVDataManager: ObservableObject {
             if sqliteHandler != nil {
                 Task { @MainActor in
                     await reloadSQLiteData()
+                    // Update aggregation when filters change
+                    updateAggregationForSelectedColumn()
                 }
             }
         }
@@ -52,7 +54,9 @@ class CSVDataManager: ObservableObject {
     @Published var fileName = ""
     
     @Published var selectedColumn: CSVColumn?
+    @Published var selectedColumnForAggregation: CSVColumn?
     @Published var aggregationResults: [AggregationResult] = []
+    @Published var currentAggregation: AggregationResult?
     @Published var visibleRows: [CSVRow] = []
     
     // SQLite integration
@@ -227,13 +231,13 @@ class CSVDataManager: ObservableObject {
             case .notEquals:
                 sqlFilters.append("\(columnName) != '\(filter.value)'")
             case .greaterThan:
-                if columns[filter.columnIndex].type == .numeric {
+                if columns[filter.columnIndex].type.isNumeric {
                     sqlFilters.append("\(columnName) > \(filter.value)")
                 } else {
                     sqlFilters.append("\(columnName) > '\(filter.value)'")
                 }
             case .lessThan:
-                if columns[filter.columnIndex].type == .numeric {
+                if columns[filter.columnIndex].type.isNumeric {
                     sqlFilters.append("\(columnName) < \(filter.value)")
                 } else {
                     sqlFilters.append("\(columnName) < '\(filter.value)'")
@@ -335,12 +339,8 @@ class CSVDataManager: ObservableObject {
         // Build SQL sort clauses
         let sortClauses = sortDescriptors.compactMap { descriptor -> String? in
             guard let columnName = descriptor.key else { return nil }
-            let clause = "\(columnName) \(descriptor.ascending ? "ASC" : "DESC")"
-            print("🔍 NSTableView Descriptor: \(columnName) ascending=\(descriptor.ascending) → SQL: \(clause)")
-            return clause
+            return "\(columnName) \(descriptor.ascending ? "ASC" : "DESC")"
         }
-        
-        print("🔍 Final ORDER BY: \(sortClauses.joined(separator: ", "))")
         
         // Load data using multi-column sort
         await loadSQLiteDataWithMultiSort(page: 0, pageSize: 100, sortClauses: sortClauses)
@@ -453,6 +453,11 @@ class CSVDataManager: ObservableObject {
         updateAggregations()
     }
     
+    func selectColumnForAggregation(_ column: CSVColumn) {
+        selectedColumnForAggregation = column
+        updateAggregationForSelectedColumn()
+    }
+    
     private func updateAggregations() {
         // TODO: Implement aggregations with SQLite queries
         // For now, calculate from visible rows
@@ -460,8 +465,28 @@ class CSVDataManager: ObservableObject {
             let result = aggregationEngine.calculate(for: visibleRows, column: column)
             aggregationResults = [result]
         } else {
-            aggregationResults = columns.filter { $0.type == .numeric }
+            aggregationResults = columns.filter { $0.type.isNumeric }
                 .map { aggregationEngine.calculate(for: visibleRows, column: $0) }
+        }
+    }
+    
+    private func updateAggregationForSelectedColumn() {
+        guard let column = selectedColumnForAggregation,
+              let handler = sqliteHandler else {
+            currentAggregation = nil
+            return
+        }
+        
+        Task { @MainActor in
+            do {
+                // Use current filters for aggregation
+                let filters = buildSQLFilters()
+                let result = try handler.getAggregation(for: column, filters: filters)
+                self.currentAggregation = result
+            } catch {
+                self.errorMessage = "Error calculating aggregation: \(error.localizedDescription)"
+                self.currentAggregation = nil
+            }
         }
     }
     
@@ -476,6 +501,8 @@ class CSVDataManager: ObservableObject {
         visibleRows = []
         aggregationResults = []
         selectedColumn = nil
+        selectedColumnForAggregation = nil
+        currentAggregation = nil
         fileName = ""
         sqliteHandler = nil
     }
