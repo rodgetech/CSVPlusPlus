@@ -601,8 +601,11 @@ class SQLiteCSVHandler {
     }
     
     private func executeSelectQuery(_ query: String, startTime: CFAbsoluteTime) throws -> QueryResult {
+        // Preprocess query to replace SELECT * with actual column names (excluding row_id)
+        let processedQuery = preprocessSelectQuery(query)
+        
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK else {
+        guard sqlite3_prepare_v2(db, processedQuery, -1, &stmt, nil) == SQLITE_OK else {
             let errorMsg = String(cString: sqlite3_errmsg(db))
             throw QueryError.executionError(errorMsg)
         }
@@ -684,7 +687,7 @@ class SQLiteCSVHandler {
     private func determineQueryType(_ query: String) -> QueryResult.QueryType {
         let upperQuery = query.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
         
-        if upperQuery.hasPrefix("SELECT") {
+        if upperQuery.hasPrefix("SELECT") || upperQuery.hasPrefix("PRAGMA") {
             return .select
         } else if upperQuery.hasPrefix("INSERT") {
             return .insert
@@ -699,6 +702,24 @@ class SQLiteCSVHandler {
         } else {
             return .other
         }
+    }
+    
+    private func preprocessSelectQuery(_ query: String) -> String {
+        let upperQuery = query.uppercased()
+        
+        // Don't preprocess PRAGMA queries - they should be executed as-is
+        if upperQuery.hasPrefix("PRAGMA") {
+            return query
+        }
+        
+        // Simple pattern matching for "SELECT * FROM csv_data" type queries
+        if upperQuery.contains("SELECT *") && upperQuery.contains("FROM \(tableName.uppercased())") {
+            // Replace SELECT * with actual column names (excluding row_id)
+            let columnNames = columns.map { $0.name }.joined(separator: ", ")
+            return query.replacingOccurrences(of: "SELECT *", with: "SELECT \(columnNames)", options: [.caseInsensitive])
+        }
+        
+        return query
     }
 }
 

@@ -234,9 +234,10 @@ struct WelcomeView: View {
     
     var body: some View {
         VStack(spacing: 24) {
-            Image(systemName: "tablecells")
-                .font(.system(size: 64))
-                .foregroundColor(.accentColor)
+            Image("AppLogo")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 96, height: 96)
             
             Text("CSV Analyzer")
                 .font(.largeTitle)
