@@ -477,15 +477,22 @@ class CSVDataManager: ObservableObject {
             return
         }
         
-        Task { @MainActor in
+        Task {
             do {
                 // Use current filters for aggregation
                 let filters = buildSQLFilters()
                 let result = try handler.getAggregation(for: column, filters: filters)
-                self.currentAggregation = result
+                
+                // Ensure UI update happens on main thread
+                await MainActor.run {
+                    self.currentAggregation = result
+                    self.objectWillChange.send() // Force SwiftUI update
+                }
             } catch {
-                self.errorMessage = "Error calculating aggregation: \(error.localizedDescription)"
-                self.currentAggregation = nil
+                await MainActor.run {
+                    self.errorMessage = "Error calculating aggregation: \(error.localizedDescription)"
+                    self.currentAggregation = nil
+                }
             }
         }
     }

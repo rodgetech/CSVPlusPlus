@@ -27,7 +27,8 @@ enum ColumnType {
         var dateCount = 0
         var boolCount = 0
         
-        for sample in nonEmpty.prefix(100) {
+        let samplesToTest = min(100, nonEmpty.count)
+        for sample in nonEmpty.prefix(samplesToTest) {
             let trimmed = sample.trimmingCharacters(in: .whitespacesAndNewlines)
             
             if trimmed.lowercased() == "true" || trimmed.lowercased() == "false" {
@@ -44,7 +45,7 @@ enum ColumnType {
             }
         }
         
-        let total = nonEmpty.count
+        let total = samplesToTest
         let threshold = Int(Double(total) * 0.8)
         
         if integerCount > threshold {
